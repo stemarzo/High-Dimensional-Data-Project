@@ -1,0 +1,759 @@
+---
+title: "Analisi trade-off Bias & Varianza dei modelli con termini di interazione"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+L'errore di previsone $ErrF$ è definito come: 
+
+$$ErrF=E(MSE_{Te})=E \left[\frac{1}{n}\sum_{i=1}^{n} (Y^*_i-\hat f(x_i))^2\right] = \frac{1}{n}\sum_{i=1}^{n} E\left [(Y^*_i-\hat f(x_i))^2\right]$$
+E' possibile distinguere tre tipologie di fonti che causano un errore di previsione:
+
+1. errore irriducibile: dovuto alla presenza della componente stocastica contenuta nel modello.
+
+Errore riducibile, scomponibile in: 
+
+2. Distorsione: esprime la quota di errore legata alla differenza media tra $f$ e $\hat f$
+
+3. Varianza: variabilità dello stimatore $\hat f$
+
+Non esiste un modello che minimizza contemporaneamente la distorsione e la varianza, è necessario cercare un “compromesso”.
+
+$$E[(Y^*_i-\hat Y^*_i)^2]=E[(f(x_i) + \epsilon^*_i - \hat f(x_i))^2]= \underbrace{E[(f(x_i) - \hat f(x_i))^2]}_{riducibile}+\underbrace{Var(\epsilon^*_i)}_{non\ riducibile} $$
+dove, $Var(\epsilon^*_i)=\sigma^2$.
+
+L’errore riducibile può essere scomposto nel $[Bias(\hat f(x_i))]^2$ e nella varianza $Var( \hat f(x_i))$ dello stimatore $\hat f$, rispettivamente:
+
+
+$$E[ ( f(x_i) - \hat f(x_i) )^2 ] = \underbrace{[ E ( \hat f(x_i)   -  f(x_i)   )  ]^2}_{[Bias( \hat f(x_i)  )    ]^2 }  + \underbrace{Var[\hat f(x_i)]}_{Variance[\hat f(x_i)]}$$
+
+A partire da questa scomposizione l'errore di previsione $ErrF$ si può scrivere come:
+
+$$ErrF=\sigma^2+\underbrace{\frac{1}{n}\sum_{i=1}^{n} (E\hat f(x_i)-f(x_i))^2}_{Bias^2}+\underbrace{\frac{1}{n} \sum_{i=i}^{n} Var(\hat f(x_i) ) }_{Varianza}$$
+
+
+Bias e varianza non possono essere minimizzate simultaneamente, qualora si fosse interessati a diminuire il bias si dovrà utilizzare un modello molto complesso ma in questo modo si otterrà un aumento della varianza. 
+Esiste un trade-off tra bias e varianza:
+
+
+```{r echo=FALSE, fig.align='center', out.width='70%'}
+knitr::include_graphics("grafico.png")
+```
+
+### Step di analisi (PSEUDO CODE)
+
+---------------------------------------------------------
+
+1. Considerare il dataset ames come Population_data.
+
+2. Dividere Population_data in Test_data e Training_data.
+
+3. Costruire Population_model: addestrato su Population_data e applicato su Test_data.
+
+4. Costruire il Mean_model, a partire da 20 campioni casuali estratti da Training_data è stato costruito un modello per ognuno di essi. Ciò permette di ottenere la previsione media dei modelli sul Test_data. 
+
+5. Calcolo Bias
+
+6. Calcolo Varianza
+
+----------------------------------------------------------------
+```{r warning=FALSE, message=FALSE}
+library(caret)
+library(glmnet)
+library(tidymodels)
+library(AmesHousing)
+library(MASS)
+library(ipred)
+library(rpart)
+library(randomForest)
+library(reshape2)
+```
+
+### Varianza
+
+$$Variance (x) = E_{sample}[\hat f_{sample}(x) -\bar f(x)]^2$$
+Dove,
+
+* $\bar f(x)$ modello medio, media delle previsioni ottenute a partire da 20 modelli costruiti su 20 campioni differenti.
+
+* $\hat f_{sample}(x)$ valori previsti sul test set, stimati a partire da un modello costruito su un campione.
+
+
+```{r warning=FALSE, message=FALSE}
+calculate_variance_of_model <- function(samplePredictions, y_test){
+  predictions_mean_model <- colMeans(samplePredictions)
+  colNames <- colnames(samplePredictions)
+  variance = numeric()
+  mse = numeric()
+  i = 1
+  for (colName in colNames) {
+    variance[i] = mean(as.numeric(samplePredictions[,colName] - predictions_mean_model[i])^2)
+    mse[i] = mean((samplePredictions[, colName] - as.numeric(y_test[i,]))^2)
+    i=i+1
+  }
+  return(list(mean(variance), mean(mse)))
+}
+```
+
+
+### Bias
+$$Bias (x) = (f(x) -\bar f(x))$$
+
+Dove,
+
+* $\bar f(x)$ modello medio, media delle previsioni ottenute a partire da 20 modelli costruiti su 20 campioni differenti.
+
+* $f(x)$ modello generatore dei dati.
+
+```{r warning=FALSE, message=FALSE}
+calculate_bias_of_model <- function(samplePredictions, y_hat_pop){
+  predictions_mean_model <- colMeans(samplePredictions)
+  return((mean(abs(predictions_mean_model-y_hat_pop)))^2)
+}
+```
+
+
+### Caricamento dataset
+
+```{r warning=FALSE, message=FALSE}
+ames <- make_ames()
+
+set.seed(955)
+ames_split <- initial_split(ames)
+ames_train <- training(ames_split)
+ames_test <- testing(ames_split)
+
+load("C:/Users/Stefano/Downloads/ames_h_stats (1).RData")
+
+```
+
+### Creazione dei termini di interazione
+```{r warning=FALSE, message=FALSE}
+
+int_vars <- 
+  h_stats %>% 
+  dplyr::filter(Estimator == "Bootstrap" & H > 0.001) %>% 
+  pull(Predictor)
+
+
+interactions <- t(combn(as.character(int_vars), 2))
+colnames(interactions) <- c("var1", "var2")
+
+interactions <- 
+  interactions %>% 
+  as_tibble() %>% 
+  mutate(
+    term = 
+      paste0(
+        "starts_with('",
+        var1,
+        "'):starts_with('",
+        var2,
+        "')"
+      )
+  ) %>% 
+  pull(term) %>% 
+  paste(collapse = "+")
+
+interactions <- paste("~", interactions)
+interactions <- as.formula(interactions)
+
+
+int_rec <-
+  recipe(Sale_Price ~ Bldg_Type + Neighborhood + Year_Built +
+           Gr_Liv_Area + Full_Bath + Year_Sold + Lot_Area +
+           Central_Air + Longitude + Latitude + MS_SubClass +
+           Alley + Lot_Frontage + Pool_Area + Garage_Finish + 
+           Foundation + Land_Contour + Roof_Style,
+         data = ames_train) %>%
+  step_log(Sale_Price, base = 10) %>%
+  step_BoxCox(Lot_Area, Gr_Liv_Area, Lot_Frontage) %>%
+  step_other(Neighborhood, threshold = 0.05) %>% 
+  step_dummy(all_nominal()) %>%
+  step_interact(interactions) %>% 
+  step_zv(all_predictors()) %>%
+  step_center(all_predictors()) %>%
+  step_scale(all_predictors()) %>%
+  step_bs(Longitude, Latitude, options = list(df = 5))
+
+prep.int_rec <- prep(int_rec)
+train_data <- bake(prep.int_rec, new_data = ames_train)
+test_data <- bake(prep.int_rec, new_data = ames_test)
+ames_data <- bake(prep.int_rec, new_data = ames)
+
+#x_train <- train_data[,-8]
+#y_train <- train_data[,8]
+
+x_test <- test_data[,-8]
+y_test <- test_data[,8]
+
+#x_pop <- ames_data[,-8]
+#y_pop <- ames_data[,8]
+
+```
+
+
+### Calcolo modello popolazione
+Considerato che la funzione generatrice dei dati è ignota, si assume che tale coincida con il modello stimato sulla totalità dei dati a disposizione.
+
+In questa applicazione sono state considerate le seguenti funzioni generatrici:  
+
+1. TREE
+```{r warning=FALSE, message=FALSE}
+fit.tree_population <- rpart(Sale_Price ~ ., ames_data)
+phat.tree_population <- predict(fit.tree_population, newdata = x_test)
+```
+
+2. RANDOM FOREST
+```{r}
+fit.rf <- randomForest(Sale_Price ~ ., data = ames_data, ntree = 50, importance = T)
+phat.random_forest <- predict(fit.rf, newdata = x_test)
+```
+
+3. BAGGING
+```{r}
+set.seed(123)
+ames_bag1 <- bagging(
+  formula = Sale_Price ~ .,
+  data = ames_data,
+  nbagg = 10,  
+  coob = TRUE,
+  control = rpart.control(minsplit = 2, cp = 0)
+)
+y_hat_pop_bag<- predict(ames_bag1, newdata = x_test)
+```
+
+
+### Stima dei modelli
+
+Al fine di stimare i modelli sui diversi campioni, si sono implementate le seguenti funzioni che permettono di addestrare un modello e ottenere le previsioni sul test set.
+
+1. TREE
+```{r}
+samplePredForDecisionTree <- function(campione){
+  sample_Tree_Model <- rpart(Sale_Price ~ ., campione)
+  return(predict(sample_Tree_Model, newdata = x_test))
+}
+```
+
+2. RANDOM FOREST
+```{r}
+samplePredForRandomForest <- function(campione){
+  sample_RF_Model <- randomForest(Sale_Price ~ ., data = campione, ntree = 50, importance = T)
+  return(predict(sample_RF_Model, newdata = x_test))
+}
+```
+
+3. BAGGING
+```{r warning=FALSE, message=FALSE}
+samplePredBagging <- function(campione){
+  set.seed(123)
+  library(caret)
+  library(ipred)
+  # train bagged model
+  ames_bag <- bagging(
+    formula = Sale_Price ~ .,
+    data = campione,
+    nbagg = 10,  
+    coob = TRUE,
+    control = rpart.control(minsplit = 2, cp = 0)
+  )
+  return(predict(ames_bag, newdata = x_test))
+}
+```
+
+### Calcolo bias & varianza
+
+In questa applicazione vengono presi in considerazione 20 modelli per ciascuna ampiezza campionaria. Le ampiezze campionarie di riferimento sono da 100, 300, 500, 700, 900, 1000, 1200 osservazioni.
+
+Con riferimento alla prima ampiezza campionaria formata da 100 osservazioni, si procede costruendo 20 campioni, ciascuno dei quali è ottenuto tramite un campionamento casuale senza reinserimento. Per ogni campione viene addestrato un generico modello, le cui previsioni sono stimate sul test set.
+Ciò permette di calcolare empiricamente il bias e la varianza del modello.
+
+Si ripete questa procedura per le diverse ampiezze campionarie, in questo modo è possibile valutare l'andamento del bias e varianza all'aumentare della dimensione campionaria.
+
+
+```{r warning=FALSE, message=FALSE}
+nModel <-20
+noOfSamples = c(100,300,500,700,900,1000,1200)
+samplePredictionsTree <- data.frame()
+samplePredictionsRF <- data.frame()
+samplePredictionsBag <- data.frame()
+risultato_finale = list()
+risultato_finale_rf = list()
+risultato_finale_bg = list()
+
+for (numerosita in noOfSamples) {
+  for (i in 1:nModel) {
+    campione = train_data[sample(nrow(ames_train),numerosita, replace = FALSE),]
+    samplePredictionsTree_temp = samplePredForDecisionTree(campione)
+    samplePredictionsTree <- rbind(samplePredictionsTree,samplePredictionsTree_temp)
+    samplePredictionsRF_temp = samplePredForRandomForest(campione)
+    samplePredictionsRF <- rbind(samplePredictionsRF,samplePredictionsRF_temp)
+    samplePredictionsBag_temp = samplePredBagging(campione)
+    samplePredictionsBag <- rbind(samplePredictionsBag,samplePredictionsBag_temp)
+  }
+  var_model = calculate_variance_of_model(samplePredictionsTree, y_test)
+  bias_model = calculate_bias_of_model(samplePredictionsTree, phat.tree_population)
+  var_model_rf = calculate_variance_of_model(samplePredictionsRF, y_test)
+  bias_model_rf = calculate_bias_of_model(samplePredictionsRF, phat.random_forest)
+  var_model_bg = calculate_variance_of_model(samplePredictionsBag, y_test)
+  bias_model_bg = calculate_bias_of_model(samplePredictionsBag, y_hat_pop_bag)
+  
+  risultato_finale_bg[[numerosita]] <- c(numerosita,var_model_bg[[1]], var_model_bg[[2]],bias_model_bg)
+  risultato_finale_rf[[numerosita]] <- c(numerosita,var_model_rf[[1]], var_model_rf[[2]],bias_model_rf)
+  risultato_finale[[numerosita]] <- c(numerosita,var_model[[1]], var_model[[2]],bias_model)
+}
+
+```
+
+Le seguenti rappresentazioni grafiche mostrano l'andamento di $bias^2$, $varianza$ e $MSE$ al variare dell'ampiezza campionaria. 
+All'aumentare dell'ampiezza campionaria aumenta la $varianza$, ma si riduce il $bias^2$, non esiste un modello che minimizza contemporaneamente la distorsione e la varianza, è necessario determinare un “compromesso”. 
+
+### Decision Tree 
+
+```{r}
+risultato_finale <- do.call("rbind",risultato_finale)
+colnames(risultato_finale) <- c("numerosita","varianza","mse", "bias")
+res_tree <- as_tibble(risultato_finale)
+res_tree$method <-"Decision Tree"
+res_tree
+```
+
+```{r warning=FALSE, message=FALSE}
+require(gridExtra)
+plot1 <- ggplot(res_tree, aes(x=numerosita, y=bias))+
+  geom_line(stat = "identity", col="blue")+
+  ggtitle("Bias")
+
+plot2 <- ggplot(res_tree, aes(x=numerosita, y=varianza))+
+  geom_line(stat = "identity", col="red")+
+  ggtitle("Varianza")
+
+plot3 <-ggplot(res_tree, aes(x=numerosita, y=mse))+
+  geom_line(stat = "identity", col="green")+
+  ggtitle("MSE")
+
+grid.arrange(plot1, plot2, plot3, ncol=2)
+
+```
+
+
+
+### Random Forest 
+
+```{r}
+risultato_finale_rf <- do.call("rbind",risultato_finale_rf)
+colnames(risultato_finale_rf) <- c("numerosita","varianza","mse", "bias")
+res_rf <- as_tibble(risultato_finale_rf)
+res_rf$method <-"Random Forest"
+res_rf
+```
+
+```{r}
+plot1 <- ggplot(res_rf, aes(x=numerosita, y=bias))+
+  geom_line(stat = "identity", col="blue")+
+  ggtitle("Bias")
+
+plot2 <- ggplot(res_rf, aes(x=numerosita, y=varianza))+
+  geom_line(stat = "identity", col="red")+
+  ggtitle("Varianza")
+
+plot3 <- ggplot(res_rf, aes(x=numerosita, y=mse))+
+  geom_line(stat = "identity", col="green")+
+  ggtitle("MSE")
+
+grid.arrange(plot1, plot2, plot3, ncol=2)
+```  
+
+
+
+### Bagging
+
+```{r warning=FALSE, message=FALSE}
+risultato_finale_bg <- do.call("rbind",risultato_finale_bg) 
+colnames(risultato_finale_bg) <- c("numerosita","varianza","mse", "bias")
+res_bg <- as_tibble(risultato_finale_bg)
+res_bg$method <-"Bagging"
+res_bg
+```
+
+
+```{r}
+plot1 <- ggplot(res_bg, aes(x=numerosita, y=bias))+
+  geom_line(stat = "identity", col="blue")+
+  ggtitle("Bias")
+
+plot2 <- ggplot(res_bg, aes(x=numerosita, y=varianza))+
+  geom_line(stat = "identity", col="red")+
+  ggtitle("Varianza")
+
+plot3 <- ggplot(res_bg, aes(x=numerosita, y=mse))+
+  geom_line(stat = "identity", col="green")+
+  ggtitle("MSE")
+
+grid.arrange(plot1, plot2, plot3, ncol=2)
+```
+ 
+
+La seguente rappresentazione confronta $MSE$, $bias^2$ e $varianza$ per i tre modelli considerati fissata un'ampiezza campionaria pari a 1200 osservazioni.
+Dai risultati emerge che il random forest ha varianza minore, infatti a differenza del bagging, per ciascun nodo anziché esplorare tutti i possibili predittori, viene preso in considerazione solamente un sottoinsieme costituito da $m<p$ predittori. 
+
+
+
+```{r}
+res_tot <- rbind(res_tree[7,], res_rf[7,],res_bg[7,])
+
+ggplot(melt(res_tot[,2:5], id.vars='method'),aes(method,value,fill=variable))+
+     geom_bar(stat="identity",position="dodge")
+
+```
+
+In generale, in termini di errore quadratico medio il random forest risulta essere il modello migliore.
+
+*NB:*
+Il Bagging è un caso particolare di Random Forest, infatti ponendo $m = p$ si ottengono gli stessi risultati. Nel Random Forest le righe vengono ricampionate nello stesso modo del bagging (ricampionamento con reinserimento) ma viene considerato solamente un sottoinsieme dei predittori.
+Il difetto principale del Bagging deriva dal limite insito del bootstrap: ovvero, i training set possono essere molto simili tra loro portando così ad ottenere degli alberi molto correlati. Il Random Forest si pone l'obiettivo di rendere gli alberi costruiti dai campioni bootstrap più diversi possibili. 
+
+
+
+# Analisi per modello glmnet e lasso
+
+### Carico dati e splitting in training e test set
+```{r warning=FALSE, message=FALSE}
+library(caret)
+library(glmnet)
+library(tidymodels)
+library(AmesHousing)
+library(hdi)
+load("C:/Users/Stefano/Downloads/ames_h_stats (1).RData")
+```
+
+```{r warning=FALSE, message=FALSE}
+
+
+ames <- make_ames()
+
+set.seed(955)
+ames_split <- initial_split(ames)
+ames_train <- training(ames_split)
+ames_test <- testing(ames_split)
+
+set.seed(24873)
+ames_folds <- vfold_cv(ames_train)
+ames_ind <- rsample2caret(ames_folds)
+```
+
+### Costruzione del modello senza interazioni:
+
+Si costruisce un modello con variabile target Sale_Price e con 18 variabili esplicative: __Bldg_Type, Neighborhood, Year_Built, Gr_Liv_Area, Full_Bath, Year_Sold, Lot_Area, Central_Air, Longitude, Latitude, MS_SubClass, Alley, Lot_Frontage, Pool_Area, Garage_Finish, Foundation, Land_Contour, Roof_Style__. La variabile target viene sottoposta a trasformazione logaritmica, mentre le variabili Lot_Area, Gr_Liv_Area, Lot_Frontage vengono normalizzate con una trasformazione di BoxCox. La dimensionalità della variabile Neighborhood viene ridotta includendo in un’unica classe “other” tutte le osservazioni con frequenza relativa <0.05. Tutte le variabili nominali vengono trasformate in variabili dummy e tutte le variabili esplicative vengono normalizzate o eliminate se hanno un solo valore identico in ogni osservazione. 
+
+```{r warning=FALSE, message=FALSE}
+main_rec <-
+  recipe(Sale_Price ~ Bldg_Type + Neighborhood + Year_Built +
+           Gr_Liv_Area + Full_Bath + Year_Sold + Lot_Area +
+           Central_Air + Longitude + Latitude + MS_SubClass +
+           Alley + Lot_Frontage + Pool_Area + Garage_Finish + 
+           Foundation + Land_Contour + Roof_Style,
+         data = ames_train) %>%
+  step_log(Sale_Price, base = 10) %>%
+  step_BoxCox(Lot_Area, Gr_Liv_Area, Lot_Frontage) %>%
+  step_other(Neighborhood, threshold = 0.05) %>% 
+  step_dummy(all_nominal()) %>%
+  step_zv(all_predictors()) %>%
+  step_center(all_predictors()) %>%
+  step_scale(all_predictors()) %>%
+  step_bs(Longitude, Latitude, options = list(df = 5))
+main_rec
+```
+### Selezione e costruzione dei termini di interazione rilevanti in base alla statistica H:
+
+Considerata la distribuzione della statistica H ottenuta a partire dal metodo bootstrap, si sono identificati i potenziali predittori fissando un cutoff pari a 0.001.  
+
+```{r}
+int_vars <- 
+  h_stats %>% 
+  dplyr::filter(Estimator == "Bootstrap" & H > 0.001) %>% 
+  pull(Predictor)
+```
+
+Si procede creando un dataframe contenente tutte le possibile coppie di interazioni $\frac{p(p−1)}{2}$ tra i regressori aventi un valore della statistica H maggiore della soglia.  
+
+```{r warning=FALSE, message=FALSE}
+interactions <- t(combn(as.character(int_vars), 2))
+colnames(interactions) <- c("var1", "var2")
+interactions
+```
+
+```{r}
+interactions <- 
+  interactions %>% 
+  as_tibble() %>% 
+  mutate(
+    term = 
+      paste0(
+        "starts_with('",
+        var1,
+        "'):starts_with('",
+        var2,
+        "')"
+      )
+  ) %>% 
+  pull(term) %>% 
+  paste(collapse = "+")
+
+interactions <- paste("~", interactions)
+interactions <- as.formula(interactions)
+```
+
+
+### Costruzione del modello glmnet con interazioni:
+
+```{r warning=FALSE, message=FALSE}
+int_rec <-
+  recipe(Sale_Price ~ Bldg_Type + Neighborhood + Year_Built +
+           Gr_Liv_Area + Full_Bath + Year_Sold + Lot_Area +
+           Central_Air + Longitude + Latitude + MS_SubClass +
+           Alley + Lot_Frontage + Pool_Area + Garage_Finish + 
+           Foundation + Land_Contour + Roof_Style,
+         data = ames_train) %>%
+  step_log(Sale_Price, base = 10) %>%
+  step_BoxCox(Lot_Area, Gr_Liv_Area, Lot_Frontage) %>%
+  step_other(Neighborhood, threshold = 0.05) %>% 
+  step_dummy(all_nominal()) %>%
+  step_interact(interactions) %>% 
+  step_zv(all_predictors()) %>%
+  step_center(all_predictors()) %>%
+  step_scale(all_predictors()) %>%
+  step_bs(Longitude, Latitude, options = list(df = 5))
+```
+
+### Parameter tuning del training:
+La ricerca dei valori ottimi di $\alpha$ e $\lambda$ avviene in una griglia contenente i possibili valori per tali parametri.
+
+```{r warning=FALSE, message=FALSE}
+ctrl <- 
+  trainControl(
+    method = "cv",
+    index = ames_ind$index,
+    indexOut = ames_ind$indexOut
+  )
+
+glmn_grid <- expand.grid(alpha = seq(.2, 1, by = .2), lambda = 10^seq(-4, -1, by = 0.1))
+```
+
+### Training del modello glmnet con interazioni:
+
+```{r warning=FALSE, message=FALSE}
+main_glmn_h <- 
+  train(main_rec,
+        data = ames_train, 
+        method = "glmnet",
+        tuneGrid = glmn_grid,
+        trControl = ctrl
+  )
+```
+
+### Training del modello glmnet senza interazioni:
+
+```{r warning=FALSE, message=FALSE}
+int_glmn_h <- 
+  train(int_rec,
+        data = ames_train, 
+        method = "glmnet",
+        tuneGrid = glmn_grid,
+        trControl = ctrl
+        )
+
+int_glmn_h$bestTune
+```
+
+
+### Plot parametri di tuning di int_glmn_h:
+```{r warning=FALSE, message=FALSE}
+p <- 
+  ggplot(int_glmn_h) + 
+  scale_x_log10() + 
+  theme_bw() + 
+  theme(legend.position = "top")
+p
+
+```
+
+Questo grafico mostra l'andamento dell'RMSE al variare dei parametri $\lambda$ e $\alpha$.
+Ogni curva corrisponde ad un diverso valore di $\alpha$ e rappresenta le performance del modello stimato in funzione del parametro di penalizzazione $\lambda$.
+In questo modo è possibile individuare i valori dei parametri di tuning che minimizzano l'RMSE. 
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+prep.int_rec <- prep(int_rec)
+train_data <- bake(prep.int_rec, new_data = ames_train)
+test_data <- bake(prep.int_rec, new_data = ames_test)
+ames_data <- bake(prep.int_rec, new_data = ames)
+x_test <- test_data[,-8]
+y_test <- test_data[,8]
+```
+
+### Scelta di lambda con cross-validation
+
+Il nostro obiettivo è quello di selezionare tra i 157 regressori quelli che risultano maggiormente implicati nello spiegare la variazione della variabile dipendente.
+La ricerca di lambda ottima avviene nella griglia di valori specificata all'interno del comando `cv.glmnet`. 
+
+```{r warning=FALSE, message=FALSE}
+ 
+lasso = cv.glmnet(as.matrix(train_data[,-8]), 
+                  train_data$Sale_Price, alpha=1, 
+                  lambda = c(10^seq(-4, -1, by = 0.1)))
+plot(lasso, ylim = c(0,0.04))
+```
+
+In questo grafico si evince il lambda path: andamento della curva dell'errore quadratico medio di previsione dato dalla cross validation.
+Per ciascun valore di lambda la media dell'errore di cross validation è rappresentata dal punto rosso le barre rappresentano gli standard error della media in corrispodenza di quel valore di lambda.
+
+```{r echo=FALSE}
+lasso
+```
+
+
+Il valore di $\lambda$ che minimizza la curva di cross validation permette di stabilire che il numero di predittori con coefficente di regressione diverso da 0 è 67.
+
+NB.  
+É possibile "tollerare" un piccolo incremento nell errore guadagnandoci dal punto di vista interpretativo; in questo modo scelgo un nuovo valore di $\lambda_{1se}$ che permette di ottenere un errore medio di previsione maggiore ma al contempo restituisce un modello più interpretabile.
+
+
+
+### Performance dei modelli sul test set
+
+Per valutare l'effetto delle interazioni sulla capacità di prevedere la varibile dipendente, si confronta l'errore quadratico medio dei due modelli sul test set.
+
+```{r warning=FALSE, message=FALSE}
+yhats_main = predict(main_glmn_h, ames_test)
+yhats_int = predict(int_glmn_h, ames_test)
+```
+
+```{r echo=FALSE}
+paste("Modello main: ", round(mean(( test_data$Sale_Price - yhats_main)^2),4))
+paste("Modello main + interazioni: ",round(mean(( test_data$Sale_Price - yhats_int)^2),4))
+```
+
+
+In termini di errore quadratico medio i due modelli risultano pressoché uguali, nonostante questo si predilige il modello senza interazioni perchè meno complesso e più facilmente interpretabile.
+
+
+## Trade-off bias & varianza
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+calculate_varaince_of_model <- function(samplePredictions, y_test){
+  predictions_mean_model <- colMeans(samplePredictions)
+  colNames <- colnames(samplePredictions)
+  variance = numeric()
+  mse = numeric()
+  i = 1
+  for (colName in colNames) {
+    variance[i] = mean(as.numeric(samplePredictions[,colName] - predictions_mean_model[i])^2)
+    mse[i] = mean((samplePredictions[, colName] - as.numeric(y_test[i,]))^2)
+    i=i+1
+  }
+  return(list(mean(variance), mean(mse)))
+}
+
+
+calculate_bias_of_model <- function(samplePredictions, y_hat_pop){
+  predictions_mean_model <- colMeans(samplePredictions)
+  return((mean(abs(predictions_mean_model-y_hat_pop)))^2)
+}
+```
+
+### Calcolo modello popolazione
+Considerando che la funzione generatrice dei dati è ignota, si assume che questa coincida con il modello stimato sulla totalità dei dati a nostra disposizione.
+
+In questa applicazione è stata considerata la seguente funzione generatrice, che coincide con il modello lasso caratterizzato dal valore di $\lambda$ che minimizza l'errore quadratico medio.   
+
+```{r}
+pop_lasso_model <- glmnet(ames_data[,-8], ames_data$Sale_Price, alpha = 1, lambda = 0.001258925)
+y_hat_pop_lasso <- predict(pop_lasso_model, newx = as.matrix(x_test))
+
+```
+
+
+### Stima del modello
+
+La seguente funzione consente di addestrare il modello e ottenere le previsioni sul test set.
+
+```{r warning=FALSE, message=FALSE}
+
+samplePredForLasso <- function(campione, lambda){
+  sample_Lasso_Model <- glmnet(campione[,-8], campione$Sale_Price, alpha = 1, lambda = lambda)
+  return(predict(sample_Lasso_Model, newx = as.matrix(x_test)))
+}
+
+```
+
+### Calcolo di bias & varianza
+
+In questa applicazione vengono stimati 30 modelli con un'ampiezza campionaria pari a 2000, ciascuno dei quali è ottenuto tramite un campionamento casuale con reinserimento. 
+
+Fissato un valore di $\lambda$, per ogni campione viene stimato un modello lasso e si effettuano previsioni sul test set.
+Ciò permette di calcolare empiricamente il bias e la varianza del modello.
+
+Si ripete questa procedura per i diversi valori di $\lambda$, in questo modo è possibile valutare l'andamento del bias e varianza all'aumentare della dimensione campionaria.
+
+```{r warning=FALSE, message=FALSE}
+nModel <-30
+samplePredictionsLasso <- data.frame()
+risultato_finale = list()
+numerosita=2000
+lambdas = c(0.001258925, 0.01, 0.05,0.1, 0.15, 0.2, 0.25, 0.30, 0.35, 0.40)
+j=1
+for (lambda in lambdas) {
+  for (i in 1:nModel) {
+    campione = train_data[sample(nrow(ames_train),numerosita, replace = TRUE),]
+    samplePredictionsLasso_temp = samplePredForLasso(campione, lambda)
+    samplePredictionsLasso <- rbind(samplePredictionsLasso,samplePredictionsLasso_temp)
+  }
+  var_model = calculate_varaince_of_model(samplePredictionsLasso, y_test)#aggiungere mse
+  bias_model = calculate_bias_of_model(samplePredictionsLasso, y_hat_pop_lasso)#aggiungere mse
+  
+ 
+  risultato_finale[[j]] <- c(lambda,var_model[[1]], var_model[[2]],bias_model)
+  j=j+1 
+}
+```
+
+
+```{r}
+risultato_finale <- do.call("rbind",risultato_finale)
+colnames(risultato_finale) <- c("lambda","varianza","mse", "bias")
+risultato_finale <- as_tibble(risultato_finale)
+risultato_finale
+```
+
+
+```{r}
+ggplot(risultato_finale, aes(x=lambda, y=bias))+
+  geom_line(stat = "identity", col="blue")+
+  ggtitle("Bias")
+
+ggplot(risultato_finale, aes(x=lambda, y=varianza))+
+  geom_line(stat = "identity", col="red")+
+  ggtitle("Varianza")
+
+ggplot(risultato_finale, aes(x=lambda, y=mse))+
+  geom_line(stat = "identity", col="green")+
+  ggtitle("MSE")
+
+
+
+```
+
+Da questi grafici si evince la presenza di un trade-off tra $distorsione^2$ e varianza, in quanto all'aumentare della penalizzazione diminuisce la varianza, ma aumenta il $bias^2$; questo perchè il modello lasso esclude un numero sempre maggiore di predittori.
+
+
+
+
+
+
+

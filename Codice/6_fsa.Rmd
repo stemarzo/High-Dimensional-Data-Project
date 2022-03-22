@@ -1,0 +1,176 @@
+---
+title: "The Feasible Solution Algorithm"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+Il problema della selezione delle interazioni più importanti, anche considerato un numero moderato di features, risulta impossibile da affrontare con una valutazione completa di tutti i possibili modelli. 
+
+Quando si utilizzano modelli lineari si sceglie spesso di utilizzare  metodi di forward, backward e stepwise selection.
+
+Miller ha proposto una tecnica alternativa per risolvere i problemi del modello lineare. Anziché rimuovere un predittore, questa tecnica utilizza un approccio sostitutivo: ogni predittore selezionato è scelto sistematicamente per sostituirne un altro all’interno del modello. 
+
+Al fine di comprendere la tecnica presenta viene riportato un esempio in cui partendo da un modello formato da dieci variabili esplicative si cerca il miglior modello con solo tre predittori. Un'iterazione dell’algoritmo si può schematizzare come segue:
+
+* Si parte selezionando tre variabili esplicative casualmente dalle dieci iniziali e si calcola una misura di performance relativa al modello costruito utilizzandole. 
+* Dopodiché si fissano le prime due esplicative e si sostituisce la terza a rotazione con ciascuna delle rimanenti variabili, calcolando la misura di performance relativa ad ogni modello.
+* Se nessuno di questi modelli fa meglio del primo, allora la terza variabile esplicativa è quella della prima iterazione, altrimenti è la variabile contenuta nel modello con migliori performance. 
+* Nello step successivo si scarta una delle due variabili precedentemente bloccate (ad esempio la prima) e si bloccano le altre due ripetendo la procedura precedente. 
+* Questo processo viene applicato fintantoché l’ultima variabile del modello è stata selezionata. 
+
+Non è garantito che l’ottimo trovato sia un ottimo globale, pertanto bisognerebbe ripetere la procedura con diverse partenze casuali, cioè con combinazioni di variabili iniziali diverse e determinare la soluzione ottima raggiunta.
+
+Hawkins ha esteso questo algoritmo, creando un approccio di modellazione chiamato Feasible Solution Algorithm (FSA), uno dei principali vantaggi è la dimensione dello spazio di ricerca nell’ordine  $q*m*p$ , molto più piccolo dell’intero spazio $p^m$.
+
+* q = numero di partenze casuali
+* m = numero di termini nel subset
+* p = numero di variabili esplicative
+
+L’algoritmo precedentemente presentato non considera le interazioni, Lambert lo ha generalizzato ampliando lo spazio di ricerca anche ad esse. L’approccio inizia con un modello base che include le variabili ritenute significative per la previsione della variabile target e, come prima cosa, viene scelto l'ordine delle interazioni tra i main effects. Il processo di identificazione delle interazioni segue la logica dell’FSA orginale, viene riportato il seguente esempio:
+
+* Dato un modello base che include tre diverse variabili esplicative si pone l'obiettivo di identificare le interazioni tra coppie di regressori.
+* L’algoritmo di Lambert seleziona casualmente due regressori e calcola la performance del modello che include i termini di base e il termine di interazione.
+* Fissato il primo predittore che compone l’interazione, si sostituisce sistematicamente il secondo con i restanti calcolando le corrispondenti performance.
+* Se il modello originale risulta il migliore si mantiene il primo termine di interazione, altrimenti lo si sostituisce con quello associato al modello migliore.
+* Si ripete poi il procedimento sostituendo sistematicamente un predittore diverso, fino a convergere in un ottimo.
+* Si utilizza infine una differente partenza casuale e si riapplica il processo. 
+
+Le soluzioni/gli ottimi trovati con le diverse partenze casuali vengono utilizzati per identificare le potenziali soluzioni.
+
+
+
+## Esempio con dati ames
+
+Anche per l'algoritmo FSA l'esempio viene effettuato sfruttando i dati ames. Per poter confrontare i risultati ottenuti con quelli delle procedure precedenti si è scelto di trasformare anche in questo caso le variabili nominali in variabili dummy individuali e poi procedere alla creazione delle interazioni (la scelta delle variabili dummy, per la creazione delle interazioni, è stata vincolata in modo che non possano essere accoppiate variabili derivanti dallo stesso predittore).
+Nell'implementazione dell'algoritmo sono state utilizzate 50 partenze casuali, con un subset di massimo 30 variabili esplicative, questo porta ad avere in ogni partenza casuale un massimo di 60 swaps delle variabili che compongono l'interazione.
+
+
+```{r librerie, echo=FALSE, warning=FALSE, results='hide', message=FALSE}
+library(tidymodels)
+library(AmesHousing)
+library(furrr)
+library(stringr)
+library(cli)
+library(crayon)
+library(stringr)
+
+source("C://Users/Stefano/Downloads/fsa_functions.R")
+source("C://Users/Stefano/Downloads/clean_value.R")
+```
+
+### Recupero dati e creazione modello base
+Il primo passo consiste nel recuperare i dati ames ed effettuare lo split in training set e test set e successivamente con il comando `vfold_cv()` in 10 folds per poi svolgere una cross validation.
+```{r preprocessing, echo=FALSE, warning=FALSE, results='hide', message=FALSE}
+ames <- make_ames() 
+set.seed(955) 
+ames_split <- initial_split(ames) 
+ames_train <- training(ames_split)
+set.seed(24873)
+ames_folds <- vfold_cv(ames_train)
+```
+
+Tramite la struttura `recipe()` si crea la matrice delle variabili esplicative relativa al modello contenente solo main effect. Grazie allo stesso comando si crea la pipeline di preprocessing dei dati, in particolare le variabili nominali sono trasformate in variabili dummies individuali.
+```{r creazioneprimomodello, warning=FALSE, message=FALSE}
+ames_rec <-
+  recipe(Sale_Price ~ Bldg_Type + Neighborhood + Year_Built + 
+           Gr_Liv_Area + Full_Bath + Year_Sold + Lot_Area +
+           Central_Air + Longitude + Latitude + MS_SubClass +
+           Alley + Lot_Frontage + Pool_Area + Garage_Finish + 
+           Foundation + Land_Contour + Roof_Style,
+         data = ames_train) %>%
+  step_log(Sale_Price, base = 10) %>% 
+  step_BoxCox(Lot_Area, Gr_Liv_Area, Lot_Frontage) %>% 
+  step_other(Neighborhood, threshold = 0.05) %>% 
+  step_dummy(all_nominal()) %>% 
+  step_bs(Longitude, Latitude, options = list(df = 5))  %>% 
+  step_zv(all_predictors())
+
+ames_rec
+```
+
+Viene mostrato il contenuto della `recipe()`, in questo caso il modello è formato da una variabile target e 18 predittori.
+
+
+### Inizializzazione parametri
+Con il seguente comando viene creato un set di metriche che verranno poi utilizzate nell'esecuzione dell'algoritmo.
+```{r multimetric, warning=FALSE, results='hide', message=FALSE}
+multi_metric <- metric_set(rmse, mae, rsq) 
+```
+
+Un'altra informaznione necessaria per l'algoritmo è la specificazione del modello di regressione da utilizzare. Nel nostro caso è stata usata una regressione lineare.
+
+```{r linearreg, warning=FALSE, results='hide', message=FALSE}
+lr_spec <- linear_reg() %>% 
+  set_engine("lm")
+```
+
+### Esecuzione dell'algoritmo fsa
+Si esegue l'algoritmo fsa appoggiandosi alla funzione *fsa_two_way* contenuta nel file *fsa_function*. La funzione esegue un fsa two way, in quanto si cercano solo le interazioni di secondo grado tra i predittori.
+Per l'esecuzione della suddetta funzione vengono forniti i seguenti parametri:
+
+* *ames_folds* = la divisione in fold per la cross validation
+* *ames_rec* = la pipeline per il preprocessing
+* *lr_spec* = il modello da utilizzare per la linear regression
+* *multi_metric* = le metriche di valutazione 
+
+la funzione ha come parametri di default:
+
+* *max_iter* = 50, sono le partenze casuali massime  
+* *max_samples* = 30, la dimensione del sottoinsieme di predittori utilizzati per creare le diverse interazioni possibili
+* *improve* = p-value = $0.1$, pct = 0, la soglia per cui il t-test sul miglioramento è statisticamente significativo
+
+```{r funzione, eval=FALSE}
+set.seed(236)
+ames_search <- fsa_two_way(ames_folds, ames_rec, lr_spec, multi_metric) 
+```
+
+
+```{r caricofile, echo= FALSE, warning=FALSE, results='hide', message=FALSE}
+load("C:/Users/Stefano/Downloads/ames_fsa.RData")
+```
+## Risultati
+```{r risultati, echo= FALSE, warning=FALSE, message=FALSE}
+ames_search %>% 
+  arrange(perf) %>% #riordina le righe per rmse 
+  dplyr::filter(perf < ames_search %>% slice(1) %>% pull(perf)) %>%  #seleziona solo le righe con rmse minore di bho
+  dplyr::select(-iter, -seeds, -change, -swaps, RMSE = perf) %>% #pulisce il dataset e rinomina la colonna perf con RMSE
+  distinct() %>%  #mantiene solo righe univoche (elimina duplicati)
+  #rinomina per rendere più leggibili le variabili
+  mutate( 
+    var_1 = clean_value(var_1), 
+    var_2 = clean_value(var_2)
+  ) %>% 
+  group_by(var_1, var_2) %>% #raggruppa per coppie di varibili
+  summarize( #per ogni coppia prende rmse e pvalue minore
+    pval = pval[which.min(RMSE)],
+    RMSE = RMSE[which.min(RMSE)]
+  ) %>% 
+  ungroup() %>% 
+  arrange(RMSE)
+```
+L'output dell'algoritmo mostra le interazioni ordinate per il valore dell'RSME ottenuto dal modello con i main effect più l'interazione in questione. Inoltre è presente anche il valore del p-value ottenuto nel t-test per verificare se il miglioramento apportato dall'aggiunta dell'interazione al modello base si può ritenere significativo.
+
+Per esempio sembra esserci una potenziale interazione tra il building type e la living area (p-value basso 0,00178). 
+
+
+
+
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

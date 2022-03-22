@@ -1,0 +1,348 @@
+---
+title: "Penalized Regression"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+Valutare i termini di interazione singolarmente impedisce ai modelli semplici di valutare l'importanza dei termini di interazione nel modello completo ( contenente tutti i main effects e i relativi termini di interazione), per questo se la completa enumerazione è possibile si potrebbe provare un approccio che ricerca le interazioni partendo da un modello completo.
+
+Utilizzando quest’approccio potrebbe però capitare che nei dati si presentino più predittori rispetto alle osservazioni del campione, ciò potrebbe non essere un problema per modelli come basati su alberi decisionali, neural networks, SVM, e K-nearest neighbors, che sono applicabili anche quando i dati contengono più predittori rispetto alla numerosità delle osservazioni del campione. Tuttavia altre tecniche più interpretabili e che spesso riportano buone performance, ad esempio le regressioni lineari e logistiche, non possono essere utilizzate direttamente sotto queste condizioni.
+Questa limitazione deriva dal fatto che qualora si hanno più predittori che osservazioni nel campione, oppure un predittore può essere scritto come combinazione di altri, non è possibile effettuare l'inversione della matrice del disegno.
+
+Essendo l’interpretabilità e la bontà del modello obiettivi della feature engineering, si sono cercati metodi per utilizzare anche in questo caso la regressione lineare e logistica. In questo contesto, si introduce una famiglia dei tecniche di modellazione dette modelli penalizzati.
+
+I metodi più utilizzati tra i modelli penalizzati sono la ridge regression e la lasso regression. Questi due tipi differenti di penalità sono solitamente associati a differenti task:
+
+* Ridge penality, utilizzata per combattere la collinearità tra predittori;
+* Lasso penality, utilizzata per l'eliminazione dei predittori superflui.
+
+Talvolta potrebbe essere necessario combinare le due penalità, a tal fine è stato introdotto il modello glmnet.
+
+## Glmnet regression
+
+Nel modello glmnet compaiono entrambi i termini di penalizzazione ridge e lasso, inoltre, sono presenti due parametri di tuning:
+
+* $\lambda$ la penalità totale ($\lambda$=$\lambda_r$+$\lambda_l$) 
+* $\alpha$ che indica la proporzione di lambda che viene associata alla regressione lasso.
+$(1-\alpha)$ è la proporzione di lambda associata alla regressione ridge.  
+
+Ad esempio scegliendo $\alpha=1$ avremo un modello fully lasso penality, scegliendo $\alpha=0.5$ avremo un modello che è metà lasso penality e metà ridge penality.
+
+La regressione tramite modello glmnet si può vedere, come nel caso della regressione lineare, come un problema di minimizzazione, in particolare del valore del somma dei quadrati dei residui, calcolata con la seguente equazione:
+
+$$
+  SSE=\sum_{i=1}^n (y_i - \hat{y}_i)^2 +(1-\alpha)\lambda_r \sum_{j=1}^P \beta^2_j + \alpha \lambda_l\sum_{j=1}^P |\beta_j|
+$$
+
+# Esempio con dati ames
+L'esempio è stato svolto utilizzando i dati ames e consiste nel tuning di due modelli glmnet. Un primo modello contenente solo i main effect e un secondo modello contenente main effect e relative interazioni.
+Il modello glmnet dopo aver provato tutte le combinazioni di valori dei parametri di tuning $\alpha$ e $\lambda$  sceglie il "best tuning", cioè il modello che minmizza il valore dell'RMSE. La scelta dei parametri di tuning ottimali permette di selezionare le variabili esplicative più significative e di stimare i loro coefficienti.
+```{r librerie, echo=FALSE, warning=FALSE, results='hide', message=FALSE}
+library(caret)
+library(glmnet)
+library(tidymodels)
+library(AmesHousing)
+library(gridExtra)
+library(stringr)
+```
+
+## Recupero dati e creazione modello main
+Il primo passo è quello di recuperare i dati ames e di effettuare lo split in training set e test set e successivamente con il comando `vfold_cv()` in 10 folds per poi svolgere una cross validation.
+```{r preprocessing, echo=FALSE}
+ames <- make_ames()
+set.seed(955)
+ames_split <- initial_split(ames)
+ames_train <- training(ames_split)
+set.seed(24873)
+ames_folds <- vfold_cv(ames_train)
+ames_ind <- rsample2caret(ames_folds)
+```
+Si passa successivamente alla creazione del primo modello, come detto in precedenza, creato utilizzando solo i main effect tramite una struttura chiamata `recipe()` che permette inoltre di specificare una pipeline per il preprocessing dei dati. In questo passo si specificano quindi la variabile target e quelle esplicative del modello e le operazioni da effettuare in fase di preprocessing.
+```{r creazioneprimomodello, warning=FALSE, results='hide', message=FALSE}
+main_rec <-
+  recipe(Sale_Price ~ Bldg_Type + Neighborhood + Year_Built +
+           Gr_Liv_Area + Full_Bath + Year_Sold + Lot_Area +
+           Central_Air + Longitude + Latitude + MS_SubClass +
+           Alley + Lot_Frontage + Pool_Area + Garage_Finish + 
+           Foundation + Land_Contour + Roof_Style,
+         data = ames_train) %>%
+  step_log(Sale_Price, base = 10) %>%
+  step_BoxCox(Lot_Area, Gr_Liv_Area, Lot_Frontage) %>%
+  step_other(Neighborhood, threshold = 0.05) %>% 
+  step_dummy(all_nominal()) %>%
+  step_zv(all_predictors()) %>%
+  step_bs(Longitude, Latitude, options = list(df = 5)) %>%
+  step_center(all_predictors()) %>%
+  step_scale(all_predictors())
+```
+
+## Creazione interazioni e modelli main + interazioni
+```{r creazioneInterazioni, echo=FALSE, warning=FALSE, results='hide', message=FALSE}
+int_vars <- 
+  main_rec %>% #prende la recipe principale
+  pluck("var_info") %>% #prende il suo elemento var_info
+  dplyr::filter(role == "predictor") %>%  #prende solo i predittori
+  pull(variable) #estrae le variabili? il risultato è un vettore con il nome delle 18 predittori
+
+#crea tutte le possibili interazioni di secondo grado
+interactions <- t(combn(as.character(int_vars), 2))
+colnames(interactions) <- c("var1", "var2")
+
+interactions <- #mette tutte le interazioni codificate sotto forma di stringa
+  interactions %>% 
+  as_tibble() %>% 
+  mutate(
+    term = 
+      paste0(
+        "starts_with('",
+        var1,
+        "'):starts_with('",
+        var2,
+        "')"
+      )
+  ) %>% 
+  pull(term) %>% 
+  paste(collapse = "+")
+
+interactions <- paste("~", interactions)
+interactions <- as.formula(interactions)#le trasforma in formula
+#praticalmente sta creando un modello con tutte le interazioni
+
+```
+
+Dopo aver creato un dataframe con tutte le possibili interazioni di secondo ordine tra i main effects del primo modello, si crea una nuova `recipe()` per il secondo modello.
+
+```{r modelloInterazioni}
+int_rec <-
+  recipe(Sale_Price ~ Bldg_Type + Neighborhood + Year_Built +
+           Gr_Liv_Area + Full_Bath + Year_Sold + Lot_Area +
+           Central_Air + Longitude + Latitude + MS_SubClass +
+           Alley + Lot_Frontage + Pool_Area + Garage_Finish + 
+           Foundation + Land_Contour + Roof_Style,
+         data = ames_train) %>%
+  step_log(Sale_Price, base = 10) %>%
+  step_BoxCox(Lot_Area, Gr_Liv_Area, Lot_Frontage) %>%
+  step_other(Neighborhood, threshold = 0.05) %>% 
+  step_dummy(all_nominal()) %>%
+  step_interact(interactions) %>% # Aggiunta delle interazioni
+  step_zv(all_predictors()) %>%
+  step_bs(Longitude, Latitude, options = list(df = 5)) %>%
+  step_center(all_predictors()) %>%
+  step_scale(all_predictors())
+
+
+```
+```{r operazioniCV,  echo=FALSE, warning=FALSE, results='hide', message=FALSE}
+ctrl <- 
+  trainControl(
+    method = "cv",
+    index = ames_ind$index,
+    indexOut = ames_ind$indexOut
+  )
+```
+
+## Tuning dei modelli
+Il modello glmnet, utilizza due diversi parametri di tuning $\alpha$ e $\lambda$, si crea un griglia contenente tutte le possibili combinazioni di questi parametri che il modello utilizzerà per effettuare il tuning ricercando la coppia che minimizza il valore dell'RMSE. Il parametro $\alpha$ può assumere valori da $0.2$ a $1$, con passo di $0.2$. Mentre $\lambda$ valori da $10^{-4}$ a $10^{-1}$ con il valore dell'esponente che varia di $0.1$.
+```{r impostorangeparam, warning=FALSE, results='hide', message=FALSE}
+glmn_grid <- expand.grid(alpha = seq(.2, 1, by = .2), lambda = 10^seq(-4, -1, by = 0.1))
+```
+
+
+### Modello main
+```{r tuningModelli1, warning=FALSE, results='hide', message=FALSE}
+main_glmn <- 
+  train(main_rec, # La recipe 
+        data = ames_train, # Dati da utilizzare per il tuning dei parametri
+        method = "glmnet", 
+        tuneGrid = glmn_grid, # Dataframe con le combinazioni dei parametri di tuning
+        trControl = ctrl # Divisione in fold per la cross validation
+  )
+
+```
+```{r infoModel1, warning=FALSE, echo=FALSE, message=FALSE}
+main_info <- 
+  list(
+    all = 
+      main_rec %>% 
+      prep(ames_train) %>% 
+      juice(all_predictors()) %>% 
+      ncol(),
+    main = length(predictors(main_glmn)),
+    perf = getTrainPerf(main_glmn)
+  )
+
+main_info
+
+```
+Dopo aver effettuato il tuning dei parametri per il primo modello, il modello risultante che minimizza il valore dell'RMSE è composto da 42 main effects che sono stati selezionati tramite la penalizzazione lasso.
+
+### Modello main + interazioni
+```{r tuningModelli, warning=FALSE, results='hide', message=FALSE}
+int_glmn <- 
+  train(int_rec,
+        data = ames_train, 
+        method = "glmnet",
+        tuneGrid = glmn_grid,
+        trControl = ctrl
+  )
+
+```
+```{r infoModel2, warning=FALSE, echo=FALSE, message=FALSE}
+#uguale sopra con il modello con le interazioni
+int_info <- 
+  list(
+    all = 
+      int_rec %>% 
+      prep(ames_train) %>% 
+      juice(all_predictors()) %>% 
+      ncol(),
+    main = sum(!grepl("_x_", predictors(int_glmn))),
+    int = sum(grepl("_x_", predictors(int_glmn))),
+    perf = getTrainPerf(int_glmn)
+  )
+int_info
+
+```
+Il secondo modello ottimale selezionato tramite i parametri di tuning è composto invece da 9 main effects e 132 termini di interazione.
+
+## Risultato main + interazioni
+Vengono mostrati i parametri che permettono di minimizzare il valore dell'RSME.
+```{r bestTuning}
+int_glmn$bestTune
+
+```
+Il plot che mostra il rapporto tra il valore dell'RMSE (asse y) e quello di $\alpha$ (colori) e $\lambda$ (asse x). 
+```{r plotTuning, echo=FALSE}
+#plot visto anche sul libro e con la prof
+#mette a confronto l'RMSE con i due parametri di tuning alfa(colori) e lambda(ascisse)
+tune_plot <- 
+  int_glmn %>%
+  pluck("results") %>%
+  mutate(alpha = factor(alpha)) %>%
+  ggplot(aes(x = lambda, y = RMSE, col = alpha)) +
+  geom_line() +
+  geom_point() +
+  scale_x_log10() +
+  ggtitle("(a)") +
+  theme(
+    legend.position = c(0.50, 0.75), 
+    legend.background = element_blank()
+  ) +
+  labs(
+    colour = "Mixing Percentage", 
+    x = "Regularization Parameter", 
+    y = "RMSE (Cross-Validation)"
+  )
+
+tune_plot
+
+```
+
+## Creazione modello two-way
+```{r twoWayOperazioni, echo=FALSE,warning=FALSE, results='hide', message=FALSE}
+
+# Determine predictors involved with main effects
+
+#recupero tutte le variabili che sono nel main effect con glmnet
+main_vars <- tibble(predictor = predictors(main_glmn)) 
+
+# con questi metodi ripartendo da tutte le dummies ritorno ai nomi 
+# delle variabili quantitative e qualitative
+all_dummies <-
+  main_rec %>% 
+  prep(ames_train) %>% 
+  tidy(number = 4) %>% 
+  mutate(predictor = main_rec$steps[[4]]$naming(terms, columns))
+all_dummies
+
+qual_vars <- 
+  inner_join(all_dummies, main_vars, by = "predictor") %>% 
+  distinct(terms) %>% 
+  pull(terms)
+qual_vars
+
+quant_vars <- 
+  summary(main_rec) %>% 
+  dplyr::select(predictor = variable) %>% 
+  inner_join(main_vars, by = "predictor") %>% 
+  pull(predictor)
+quant_vars
+
+used_main <- c(qual_vars, quant_vars)
+used_main
+
+# make their interactions
+#le combino tutte nelle possibili coppie di interazioni
+interaction_subset <- t(combn(as.character(used_main), 2))
+colnames(interaction_subset) <- c("var1", "var2")
+
+#rifaccio la stessa cosa fatta anche in precedenza per trasformare in stringa
+#e in formato da poter inserire tutte le possibili interazioni nel modello
+interaction_subset <- 
+  interaction_subset %>% 
+  as_tibble() %>% 
+  mutate(
+    term = 
+      paste0(
+        "starts_with('",
+        var1,
+        "'):starts_with('",
+        var2,
+        "')"
+      )
+  ) %>% 
+  pull(term) %>% 
+  paste(collapse = "+")
+
+interaction_subset <- paste("~", interaction_subset)
+interaction_subset <- as.formula(interaction_subset)
+
+
+```
+
+Dopo aver effettuato il tuning dei precedenti due modelli e trovato per ogni modello i regressori significativi, l'esempio procede con un modello glmnet two way. Per la sua creazione vengono presi i main effects risultati significativi nel primo modello, si creano tutte le possibili interazioni binarie e infine si aggiungono ad un modello contenente i main effect. Si riesegue poi il tuning su questo terzo modello.
+```{r twoWayOperazioni2, warning=FALSE, results='hide', message=FALSE}
+two_stage_rec <-
+  recipe(Sale_Price ~ Bldg_Type + Neighborhood + Year_Built +
+           Gr_Liv_Area + Full_Bath + Year_Sold + Lot_Area +
+           Central_Air + Longitude + Latitude + MS_SubClass +
+           Alley + Lot_Frontage + Pool_Area + Garage_Finish + 
+           Foundation + Land_Contour + Roof_Style,
+         data = ames_train) %>%
+  step_log(Sale_Price, base = 10) %>%
+  step_BoxCox(Lot_Area, Gr_Liv_Area, Lot_Frontage) %>%
+  step_other(Neighborhood, threshold = 0.05) %>% 
+  step_dummy(all_nominal()) %>%
+  step_interact(interaction_subset) %>% 
+  step_zv(all_predictors()) %>%
+  step_bs(Longitude, Latitude, options = list(df = 5)) %>%
+  step_center(all_predictors()) %>%
+  step_scale(all_predictors())
+
+```
+```{r twoWayOutput, echo=FALSE, warning=FALSE, message=FALSE}
+
+#eseguo la glmn
+two_stage_glmn <- 
+  train(two_stage_rec,
+        data = ames_train, 
+        method = "glmnet",
+        tuneGrid = glmn_grid,
+        trControl = ctrl
+  )
+
+two_stage_info <- 
+  list(
+    all = 
+      two_stage_rec %>% 
+      prep(ames_train) %>% 
+      juice(all_predictors()) %>% 
+      ncol(),
+    main = sum(!grepl("_x_", predictors(two_stage_glmn))),
+    int = sum(grepl("_x_", predictors(two_stage_glmn))),
+    perf = getTrainPerf(two_stage_glmn)
+  )
+two_stage_info
+```

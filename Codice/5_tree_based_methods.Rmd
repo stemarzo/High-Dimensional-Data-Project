@@ -1,0 +1,322 @@
+---
+title: "Tree-Based Methods"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+Il numero di interazioni da studiare cresce esponenzialmente al crescere del numero di variabili esplicative rendendo l’esplorazione dei termini di interazione molto onerosa dal punto di vista computazionale.
+
+Dal lato statistico non sarebbe una scelta saggia studiare tutte le possibili interazioni. Le interazioni importanti tra le variabili esplicative, infatti, sono generalmente poche e all’aumentare del numero di interazioni irrilevanti esaminate aumenta la penalità imposta al fine di valutarle. Di conseguenza, interazioni realmente significative potrebbero essere perse. In questi casi sono necessari altri approcci per rendere la ricerca più efficiente, ma comunque efficace, nel trovare le interazioni importanti.
+
+I metodi presentati finora sono efficaci per individuare interazioni in presenza di un numero moderato di regressori. 
+Metodi basati sugli alberi decisionali risultano particolarmente efficaci per scoprire potenziali interazioni in presenza di molti regressori.  
+Queste tecniche si basano sul partizionamento ricorsivo che consiste nell’individuare il punto di split ottimo di un predittore che separa le osservazioni in gruppi omogenei rispetto alla variabile risposta.  
+Una volta effettuato lo split, la stessa procedura si ripete per ciascun sottoinsieme di osservazioni in corrispondenza di ogni nodo successivo.  
+Questo processo termina quando si raggiunge il numero minimo di osservazioni in ciascun nodo oppure viene soddisfatto un criterio di ottimizzazione.  
+Quando i dati vengono splittati ricorsivamente, ogni nodo successivo può essere interpretato come una interazione locale tra il nodo precedente e il nodo corrente.  
+Inoltre, più è frequente il verificarsi di nodi successivi della stessa coppia di predittori, maggiore è la probabilità che l’interazione tra questi sia di tipo globale.  
+Formalmente, al fine di comprendere l’efficacia della tecnica presentata per individuare una relazione sinergica tra due regressori, si consideri un esempio in cui l’albero di partizionamento ricorsivo ottimo (Figura 1) risulta:    
+
+```{r, Tree,fig.cap="Figura 1: Albero di partizione ricorsiva utile ad individuare una relazione sinergetica tra due predittori" ,fig.align='center',echo=FALSE,out.width='100%'}
+knitr::include_graphics("Tree.png")
+```
+
+L'interazione viene catturata attraverso diversi splits alternati tra i due predittori ai livelli successivi dell'albero.  
+Considerando il loro tipo di equazioni, i modelli basati sugli alberi decisionali possono essere interpretati come una interazione pura.  
+Ad esempio, l’equazione del nodo 4 può essere scritta come:  
+$$node_4= I(x_1 <0.655)*I(x_2<0.6)*I(x_0.316)*0.939 $$  
+dove 0.939 coincide con la media delle osservazioni presenti nel nodo 4 mentre __$I$__ rappresenta la funzione indicatrice.  
+
+Una relazione sinergica produce delle curve di livello non lineari per la variabile risposta (Figura 2), il modello di partizionamento ricorsivo rompe lo spazio in regioni rettangolari, pertanto risultano necessarie più regioni al fine di spiegare correttamente la risposta, questo però limita fortemente la capacità di modellare interazioni globali.  
+
+
+```{r, contour lines,fig.cap="Figura 2 : Risposta prevista ottenibile a partire da un modello di partizione ricorsiva tra 2 regressori che sono in relazione sinergica " ,fig.align='center',echo=FALSE,out.width='50%'}
+knitr::include_graphics("contour lines.png")
+```
+  
+Questo grafico rappresenta le previsioni di ciascun nodo terminale rappresentate da regioni rettangolari in cui il colore indica il valore della risposta prevista per la corrispondente regione a cui sono sovrapposte le curve di livello generate dal modello lineare utilizzato per stimare il termine di interazione.  
+Nonostante il modello stimato, decomponendo lo spazio della variabili in regioni rettangolari, approssimi adeguatamente la relazione sinergica, sono richieste troppe regioni per spiegare questa relazione.  
+Un modello basato su un singolo albero decisionale può essere caratterizzato da un’alta variabilità, ciò rende le previsioni poco affidabili.  
+Per superare questo limite, è possibile ricorrere a metodi di ensemble learning come bagging e boosting che riescono ad identificare le principali relazioni tra i predittori, garantendo una migliore capacità previsiva della variabile risposta.  
+Le tecniche di ensemble learning sono particolarmente efficaci nell’identificare le relazioni tra predittori e risposta perché aggregano molti alberi decisionali utilizzando delle versioni leggermente diverse dei dati originali.  
+Considerata una relazione sinergica tra x1 e  x2, la Figura 3 mostra che i modelli boosted tree e bagged tree sono in grado di approssimare meglio la relazione tra i predittori e la variabile risposta rispetto a un singolo albero decisionale.  
+
+```{r, modello boosted tree vs modello bagged tree,fig.cap="Figura 3 : Modello boosted tree vs. Modello bagged tree nel caso di una relazione sinergica tra due predittori" ,fig.align='center',echo=FALSE,out.width='70%'}
+knitr::include_graphics("modello boosted tree vs modello bagged tree.png")
+```
+
+Infatti, la radice quadrata dell’errore quadratico medio (RMSE) per questi 3 modelli risulta:   
+$RMSE_{boosting}=0.27$  
+$RMSE_{bagging}=0.6$  
+$RMSE_{tree}=0.9$  
+  
+Nonostante la loro complessità e le loro difficoltà nell’identificare le interazioni globali, quando si verificano interazioni importanti all'interno di uno o più sottoinsiemi dei campioni i metodi basati sugli alberi decisionali risultano particolarmente adeguati per modellare questo tipo di interazioni (interazioni locali).  
+In conclusione, gli alberi decisionali e i metodi di ensemble learning permettono di ottenere delle informazioni rilevanti riguardo le principali interazioni tra regressori, è suggeribile utilizzare tali informazioni in modo da costruire un modello lineare più semplice.  
+Un altro approccio basato sui metodi di ensemble learning introdotto da Friedman & Popescu (2008) utilizza la dipendenza parziale al fine di identificare le principali interazioni.  
+In altre parole, questa tecnica confronta l’effetto congiunto di due (o più) predittori con l’effetto individuale di ciascun predittore di un modello.  
+Se un predittore non interagisce con nessun altro allora la differenza tra l’effetto congiunto e quello individuale sarà vicina a 0.  
+Qualora, invece, fosse presente un interazione tra un predittore ed un altro allora questa differenza sarebbe maggiore di 0.  
+Questo confronto avviene per mezzo della statistica H.  
+Questa statistica presenta distribuzione bimodale qualora si è in presenza di valori sparsi, e solitamente, ciò accade quando un predittore non è coinvolto in nessuna interazione.  
+Quando il dataset a disposizione è relativamente piccolo, si calcola la statistica H come la mediana delle statistiche H relative a più campioni di tipo bootstrap.   
+Successivamente viene fissato un cut off relativamente alla statistica H in modo da selezionare le variabili.  
+Le variabili a cui corrisponde un valore della statistica H maggiore del cut off vengono segnalate come coinvolte in una potenziale interazione.  
+In questo modo, è possibile inserire in un modello lineare tutte le coppie di interazioni segnalate.  
+
+## Esempio dati ames
+
+Per comprendere la metodologia presentata si consideri la seguente applicazione:  
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+library(pre)
+library(ranger)
+library(tidymodels)
+library(AmesHousing)
+library(doParallel)
+library(stringr)
+
+```
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+load("C:/Users/Stefano/Downloads/ames_rf (1).RData")
+load("C:/Users/Stefano/Downloads/ames_h_stats (2).RData")
+
+```
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+clean_value <- function(x) {
+  x <- str_replace(x, "Neighborhood_", "Neighborhood: ")
+  x <- str_replace(x, "MS_SubClass_", "MS SubClass: ")
+  x <- str_replace(x, "Land_Contour_", "Land Contour: ")
+  x <- str_replace(x, "Roof_Style_", "Roof Style: ")
+  x <- str_replace(x, "Foundation_", "Foundation: ")
+  x <- str_replace(x, "Garage_Finish_", "Garage Finish: ")
+  x <- str_replace(x, "Central_Air", "Central Air:")
+  x <- str_replace(x, "Bldg_Type", "Building Type")
+  x <- str_replace(x, "Alley", "Alley:")
+  x <- str_replace(x, "Gr_Liv_Area", "Living Area")
+  x <- str_replace(x, "_bs_1", " (spline)")   
+  x <- str_replace(x, "_bs_2", " (spline)")
+  x <- str_replace(x, "_bs_3", " (spline)")
+  x <- str_replace_all(x, "_", " ")
+  x
+}
+```
+
+
+```{r}
+h_stat <- function(data, ...) {
+  require(foreach)
+  pre_obj <- pre(data = data, ...)
+  
+  pred_names <- pre_obj$x_names
+  pred_df <- 
+    tibble(
+      Predictor = pred_names,
+      H = 0
+    )
+  
+  int_obj <-
+    try(
+      interact(
+        pre_obj,
+        parallel = TRUE,
+        plot = FALSE
+      ),
+      silent = TRUE)
+  
+  if (!inherits(int_obj, "try-error")) {
+    res <-
+      tibble(
+        Predictor = names(int_obj),
+        H = as.numeric(int_obj)
+      )
+    missing_pred <- setdiff(pred_names, res$Predictor)
+    if (length(missing_pred) > 0) {
+      res <-
+        pred_df %>% 
+        dplyr::filter(Predictor %in% missing_pred) %>%
+        bind_rows(res)
+    }
+  } else {
+    print(int_obj)
+    res <- pred_df
+  }
+  res
+}
+
+```
+
+```{r}
+boot_h <- function(split, ...) {
+  dat <-
+    recipe(Sale_Price ~ Bldg_Type + Neighborhood + Year_Built +
+             Gr_Liv_Area + Full_Bath + Year_Sold + Lot_Area +
+             Central_Air + Longitude + Latitude + MS_SubClass +
+             Alley + Lot_Frontage + Pool_Area + Garage_Finish + 
+             Foundation + Land_Contour + Roof_Style,
+           data = analysis(split)) %>%
+    step_log(Sale_Price, base = 10) %>%
+    step_BoxCox(Lot_Area, Gr_Liv_Area, Lot_Frontage) %>%
+    step_other(Neighborhood, MS_SubClass, Roof_Style, Foundation,
+               threshold = 0.05)  %>%
+    step_zv(all_predictors()) %>% 
+    prep(training = analysis(split), retain = TRUE) %>%
+    juice()
+  h_stat(data = dat, ...)
+}
+```
+
+
+```{r, eval=FALSE, echo=FALSE}
+workers <- parallel::detectCores() - 1
+cl <- makeForkCluster(nnodes = workers)
+registerDoParallel(cl)
+
+```
+
+
+Per motivi computazionali, in questa applicazione vengono considerati solamente 18 regressori presenti nel dataset Ames, rispettivamente: **Bldg_Type, Neighborhood, Year_Built, Gr_Liv_Area, Full_Bath, Year_Sold, Lot_Area, Central_Air, Longitude, Latitude, MS_SubClass, Alley, Lot_Frontage, Pool_Area, Garage_Finish, Foundation, Land_Contour e Roof_Style. **   
+
+```{r, warning=FALSE}
+ames <- make_ames()
+set.seed(955)
+ames_split <- initial_split(ames)
+ames_train <- training(ames_split)
+
+ames_rec <-
+  recipe(Sale_Price ~ Bldg_Type + Neighborhood + Year_Built +
+           Gr_Liv_Area + Full_Bath + Year_Sold + Lot_Area +
+           Central_Air + Longitude + Latitude + MS_SubClass +
+           Alley + Lot_Frontage + Pool_Area + Garage_Finish + 
+           Foundation + Land_Contour + Roof_Style,
+         data = ames_train) %>%
+  step_log(Sale_Price, base = 10) %>%
+  step_BoxCox(Lot_Area, Gr_Liv_Area, Lot_Frontage) %>%
+  step_other(Neighborhood, MS_SubClass, Roof_Style, Foundation, 
+             threshold = 0.05)  %>%
+  step_zv(all_predictors())
+
+ames_pre <- ames_rec %>% prep(ames_train) %>% juice()
+ames_rec
+```
+Il comando `recipe()` permette di applicare opportune trasformazioni ai dati iniziali.   
+  
+
+Dopo aver trasformato le variabili si calcola la statistica H sul training set.  
+
+```{r , include=TRUE, echo=TRUE, eval=FALSE}
+ 
+set.seed(3108)  
+ obs_h <-  
+   h_stat(  
+     data = ames_pre,  
+     Sale_Price ~ .,  
+     normalize = TRUE,  
+     ntrees = 10,  
+     winsfrac = 0,  
+     verbose = TRUE,  
+     par.final = TRUE  
+   )  
+
+```
+
+Considerato che il dataset a disposizione è relativamente piccolo, si procede calcolando la statistica H anche come la mediana delle statistiche H relative a più campioni di tipo bootstrap.  
+
+```{r , include=TRUE, echo=TRUE, eval=FALSE}
+
+h_stats <- 
+  h_vals %>%
+  pull(stats) %>%
+  bind_rows() %>%
+  group_by(Predictor) %>%
+  summarise(Bootstrap = median(H)) %>%
+  full_join(
+    obs_h %>% dplyr::rename(`Original Data` = H)
+  ) %>%
+  arrange(Bootstrap)
+
+ordered_pred <- 
+  h_stats %>%
+  pull(Predictor)
+
+h_stats <-
+  h_stats %>%
+  gather(Estimator, H, -Predictor) %>%
+  mutate(Predictor = factor(Predictor, levels = ordered_pred)) %>% 
+  dplyr::filter(H > 0)
+```
+
+Successivamente, viene fissato un cut off pari a 0.001 in modo da segnalare le variabili che risultano coinvolte in una potenziale interazione.   
+
+```{r , include=TRUE, echo=TRUE}
+p <- 
+  h_stats %>% 
+  mutate(
+    Predictor = clean_value(Predictor),
+    Predictor = str_replace(Predictor, ":", "")
+  ) %>% 
+  ggplot(aes(x = reorder(Predictor, H), y = H, shape = Estimator)) + 
+  geom_hline(yintercept = 0.001, col = "red", alpha = 0.5, lty = 2) + 
+  geom_point() + 
+  coord_flip() + 
+  xlab("") + 
+  scale_shape_manual(values = c(16, 1)) + 
+  theme(legend.position = "top")
+p
+```
+
+
+Da questa rappresentazione grafica emerge che 6 predittori sono coinvolti in almeno una interazione.  
+
+```{r, eval=FALSE, echo=FALSE}
+stopCluster(cl)
+```
+
+
+Un secondo approccio utile ad identificare le interazioni combina le informazioni riguardo l’importanza dei predittori con i principi di gerarchia, sparsità ed ereditarietà. 
+Se una interazione viene considerata importante, allora un metodo basato sugli alberi di decisione utilizzerà i predittori coinvolti più volte in più alberi in modo da scoprire la loro relazione con la variabile risposta.  
+I coefficienti di regressione associati a tali predittori risulteranno significativamente diversi da 0.  
+In questo modo è possibile creare le principali coppie di interazioni e valutare la loro rilevanza nelle previsione della variabile risposta.  
+Ogni metodo basato sugli alberi decisionali è caratterizzato da uno specifico algoritmo utile a calcolare l’importanza di un predittore.  
+In questo contesto, uno degli algoritmi più popolari si ottiene a partire da un random forest che utilizza campioni bootstrap per combinare le previsioni ottenute da diversi modelli, riuscendo così a migliorare la capacità previsiva del modello.  
+Un albero decisionale costruito su un campione bootstrap utilizza $\frac{2}{3}$ delle osservazioni originali.  
+E’ possibile prevedere la risposta della i-esima osservazione utilizzando gli alberi per i quali questa risulta Out-of-Bag.  
+Questo produce circa $\frac{B}{3}$ previsioni per la i-esima osservazione che vengono aggregate calcolando la media oppure la moda.  
+Per valutare l’importanza di uno specifico predittore, i suoi valori vengono mescolati, e successivamente viene ricalcolato l’errore Out-of-Bag.   
+Qualora il predittore sia rilevante, tale errore dovrebbe peggiorare in modo significativo.   
+La random forest conduce questa analisi per ogni predittore presente nel modello e crea uno score per ciascuna feature, all’aumentare dello score aumenta il grado di importanza del predittore.  
+
+
+Innanzitutto, si procede stimando un modello di tipo random forest e si ottiene uno score che riflette l'importanza di ciascun regressore.  
+
+```{r , include=TRUE, echo=TRUE, eval=FALSE}
+
+rf_mod <- ranger(Sale_Price ~ ., data = ames_pre, num.trees = 2000,
+                 importance = "impurity", num.threads = workers,
+                 seed = 8516)
+```
+
+```{r , include=TRUE, echo=TRUE, eval=FALSE}
+rf_imp <- 
+  tibble(
+    Predictor = names(rf_mod$variable.importance),
+    Importance = unname(rf_mod$variable.importance)
+  )
+```
+
+```{r , include=TRUE, echo=TRUE}
+p <- 
+  ggplot(rf_imp, aes(x = reorder(Predictor, Importance), y = Importance)) + 
+  geom_bar(stat = "identity") + 
+  coord_flip() + 
+  xlab("")
+p
+```
+
+Questa figura mostra i 10 regressori che risultano più importanti, alcuni di loro sono stati segnalati come potenziali termini di interazione da altre metodologie presentate.   
+I predittori più importanti sono living area e year built, è ragionevole assumure che una possibile interazione tra questi regressori risulti molto significativa.  
+In generale, le interazioni tra i principali predittori potrebbero essere incluse in un modello più semplice in modo da valutare se migliora la capacità previsiva della variabile risposta.  

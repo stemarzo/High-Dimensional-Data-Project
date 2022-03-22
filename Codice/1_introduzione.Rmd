@@ -1,0 +1,176 @@
+---
+title: "Detecting interaction effect"
+author: "Cattaneo Andrea, Cosentino Alessandro, Marzorati Stefano"
+date: "9/12/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Talvolta si è soliti rappresentare un fenomeno esaminando il solo impatto delle variabili esplicative prese singolarmente. Questo approccio risulta più semplice e facilmente interpretabile, ma non sempre coerente alla realtà. In molte situazioni è possibile migliorare la capacità previsiva del modello considerando l’effetto congiunto di due o più predittori.
+
+Per poter meglio cogliere l’importanza delle interazioni si consideri il seguente esempio:
+
+"si supponga di voler massimizzare la resa di un campo di grano utilizzando acqua e fertilizzante. Qualora si utilizzasse la quantità ottima di fertilizzante ma senza usare acqua il campo non renderebbe nulla poiché le piante non potrebbero crescere senza acqua. Se, invece, si utilizzasse la quantità ottima d'acqua ma senza fertilizzante la resa del campo sarebbe buona, ma non ottimale, poiché le piante necessiterebbero comunque del fertilizzante.Per massimizzare il rendimento ottenibile dal campo è necessario combinare acqua e fertilizzante nella quantità ottimale poiché questi due fattori interagiscono tra loro." 
+
+Da questo esempio si comprende che, talvolta, per poter rappresentare correttamente un fenomeno è necessario introdurre un'interazione tra le variabili coinvolte.
+
+Formalmente, si può dire che due predittori interagiscono se il loro effetto congiunto sulla variabile dipendente è diverso da quello che ci si aspetta valutandoli singolarmente.
+
+Si consideri un modello lineare, un'interazione è esprimibile come segue:
+
+$$ y= \beta_0 + \beta_1x_1 + \beta_2x_2 + \beta_3x_1x_2 + \epsilon $$
+dove,
+
+* $\beta_0$ l’intercetta, corrisponde al valore medio della variabile dipendente, y, quando $x_1$ e $x_2$ sono entrambe a zero.
+
+* $\beta_1$ rappresenta la variazione della variabile dipendente in corrispondenza della variazione unitaria di $x_1$ se $x_2$ è nulla.
+
+* $\beta_2$ rappresenta la variazione di $y$ quando $x_2$ subisce una variazione unitaria e $x_1$ è nulla.
+
+* $\beta_3$ è il coefficiente di regressione corrispondente al termine di interazione tra $x_1$ e $x_2$ e rappresenta il modo in cui le due variabili influenzano congiuntamente $y$. 
+
+* $\epsilon$ è la componente stocastica del modello, essa rappresenta la variazione di y che non può essere spiegata dalla componente deterministica dell’equazione.
+
+### ESEMPIO DI INTERAZIONE TRA UNA VARIABILE QUANTITATIVA E UNA VARIABILE QUALITATIVA
+
+Si consideri il seguente modello:
+
+$$modello\ di\ interesse:\ y_t=\beta_1+\beta_2x_t+\epsilon_t\ ,\ t=1,...,T$$
+Qualora si fosse interessati a incorporare informazioni qualitative è necessario ricorrere all’utilizzo di una variabile dummy.
+
+$$d_t=\begin{cases} 0 &se\ t\in A  \\1&se\ t\notin A \end{cases}$$
+$$modello\ con\ interazione:\ y_t=\beta_1+\beta_2x_t+\beta_3d_tx_t+\epsilon_t\ ,\ t=1,...,T$$
+Si noti che $\beta_3$ non è un effetto marginale, esso è interpretabile come:
+
+* $d_t =0 \rightarrow E(Y_t)=\beta_1+\beta_2x_t$
+ 
+* $d_t =1 \rightarrow E(Y_t)=\beta_1+(\beta_2+\beta_3)x_t$
+
+```{r echo=FALSE}
+
+set.seed(1)
+
+X <- runif(200,0, 15)
+D <- sample(0:1, 200, replace = T)
+Y <- 450 +  150 * X + 500*D +50 * (X * D) + rnorm(200, sd = 300)
+
+
+plot(X, log(Y),
+     pch = 20,
+     col = "steelblue",
+     main = "Same Intercept, Different Slopes")
+
+mod3_coef <- lm(log(Y) ~ X + X:D)$coefficients
+
+abline(coef = c(mod3_coef[1], mod3_coef[2]), 
+       col = "red",
+       lwd = 1.5)
+
+abline(coef = c(mod3_coef[1], mod3_coef[2] + mod3_coef[3]), 
+       col = "green",
+       lwd = 1.5)
+```
+
+Considerato questo esempio la seguente applicazione lo generalizza fornendo un maggiore livello di dettaglio.
+
+```{r echo=TRUE}
+
+set.seed(1)
+
+X <- runif(200,0, 15)
+D <- sample(0:1, 200, replace = T)
+Y <- 450 +  150 * X + 500*D +50 * (X * D) + rnorm(200, sd = 300)
+
+
+m <- rbind(c(1, 2), c(3, 0))
+graphics::layout(m)
+
+
+
+#modello senza interazioni
+plot(X, log(Y),
+     pch = 20,
+     col = "steelblue",
+     main = "Different Intercepts, Same Slope")
+
+mod1_coef <- lm(log(Y) ~ X + D)$coefficients
+
+abline(coef = c(mod1_coef[1], mod1_coef[2]), 
+       col = "red",
+       lwd = 1.5)
+
+abline(coef = c(mod1_coef[1] + mod1_coef[3], mod1_coef[2]), 
+       col = "green",
+       lwd = 1.5)
+       
+#modello base più interazioni
+plot(X, log(Y),
+     pch = 20,
+     col = "steelblue",
+     main = "Different Intercepts, Different Slopes")
+
+mod2_coef <- lm(log(Y) ~ X + D + X:D)$coefficients
+
+abline(coef = c(mod2_coef[1], mod2_coef[2]), 
+       col = "red",
+       lwd = 1.5)
+
+abline(coef = c(mod2_coef[1] + mod2_coef[3], mod2_coef[2] + mod2_coef[4]), 
+       col = "green",
+       lwd = 1.5)
+
+# dummy solo nell'interazione
+plot(X, log(Y),
+     pch = 20,
+     col = "steelblue",
+     main = "Same Intercept, Different Slopes")
+
+mod3_coef <- lm(log(Y) ~ X + X:D)$coefficients
+
+abline(coef = c(mod3_coef[1], mod3_coef[2]), 
+       col = "red",
+       lwd = 1.5)
+
+abline(coef = c(mod3_coef[1], mod3_coef[2] + mod3_coef[3]), 
+       col = "green",
+       lwd = 1.5)
+```
+
+
+### TIPOLOGIE DI INTERAZIONE
+
+Le interazioni si possono presentare in 4 forme:
+
+1. Se $\beta_3$ non è significativamente diverso da 0, allora l’interazione tra $x_1$ e $x_2$ non è utile per spiegare la variazione della variabile dipendente. In questo caso, la relazione tra $x_1$ e $x_2$ è detta *additiva*;
+
+2. Se $\beta_3$ è minore di 0 e indipendentemente le variabili $x_1$ e $x_2$ influenzano la variabile dipendente, allora la relazione è detta *antagonistica*;
+
+3. Se $\beta_3$ è maggiore di 0 e indipendentemente le variabili $x_1$ e $x_2$ influenzano la variabile dipendente, allora la relazione è detta *sinergica*;
+
+4. Se $\beta_3$ è significativamente diverso da 0 ma $x_1$ e/o $x_2$ non influenzano la variabile dipendente, allora la relazione è detta *atipica*.
+
+
+### PRINCIPI PER LA RICERCA DELLE INTERAZIONI
+
+La feature engineering si pone come obiettivo la creazione di specifiche variabili esplicative che permettono di migliorare l’efficacia di un modello utilizzando le informazioni predittive più rilevanti, cercando di  individuare le interazioni principali tra i regressori.
+
+La conoscenza del contesto di studio è un punto fondamentale per guidare il processo di selezione dei termini di interazione, se questa non è disponibile risulta fondamentale definire principi che guidino il processo di selezione delle interazioni, costruendo un framework che permetta di definire le relazioni di causalità tra i predittori e la variabile dipendente. Wu e Hamada forniscono un framework per identificare le interazioni significative che si basa su 3 dimensioni principali:
+
+* La gerarchia di interazione: tanto più alto è il grado dell’interazione, quanto più bassa è la capacità di quest’ultima di spiegare le variazioni della variabile dipendente. E' consigliabile considerare inizialmente interazioni formate da coppie di variabili per poi aumentare il grado di interazione. Questo permette anche una maggiore interpretabilità del modello.
+
+* Effetto sparsità: solo una parte dei possibili termini di interazione è utile a spiegare una quantità significativa della variazione della variabile dipendente.
+
+* Principio di ereditarietà: un’interazione può essere valutata solo se i termini di ordine inferiore che la compongono sono efficaci nello spiegare la variazione della variabile dipendente. 
+Ci sono due tipologie: ereditarietà forte (tutti i termini dell’interazione devono essere significativi) ed ereditarietà debole (almeno un termine dell’interazione deve essere significativo).
+
+Prima di ricercare le possibili interazioni tra regressori è necessario fare alcune considerazioni in modo da adottare la strategia migliore. Per prima cosa bisognerebbe capire se è possibile o meno valutare tutti i termini di interazione e scegliere il momento più opportuno per crearli; questo perché l’ordine delle operazioni di preprocessing influisce sulla capacità di trovare interazioni importanti.
+
+
+
+
+
+
+

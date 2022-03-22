@@ -1,0 +1,233 @@
+---
+title: "The Brute-Force Approach to Identifying Predictive Interactions"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Per dataset che hanno un numero piccolo o moderato di predittori, è possibile valutare tutte le coppie di interazioni.  
+Tuttavia maggiore è il numero di termini di interazione che vengono valutati, maggiore è la probabilità di trovare delle interazioni dette false positive, ovvero che risultano statisticamente significative ma non a causa di una vera relazione e possono dunque peggiorare le performance predittive del modello.  
+
+# Simple Screening
+
+Gli approcci tradizionali per individuare i termini di interazioni più rilevanti si basano sui modelli nidificati.  
+Si consideri un modello lineare con 2 soli regressori, si definisce __main effects model__ il seguente modello:  
+$M_1: y=\beta_0+\beta_1x_1+\beta_2x_2+\epsilon$  
+
+E’ possibile costruire un secondo modello che aggiunge una potenziale interazione tra i due regressori.  
+$M_2: y=\beta_0+\beta_1x_1+\beta_2x_2+\beta_3x_1x_2+\epsilon$  
+
+Questi due modelli sono detti “nidificati” perché il primo modello è incluso nel secondo ($M_1 \subseteq M_2$).  
+In presenza di questa struttura, è possibile effettuare un confronto statistico sulla quantità di informazione addizionale che è stata acquisita dal termine di interazione.  
+In questo contesto, con riferimento a una regressione lineare, è necessario confrontare l’errore residuo di $M_1$ e $M_2$ per valutare se il miglioramento dell’errore,ponderato per i gradi di libertà, è sufficiente per essere considerato reale.  
+Per la regressione lineare, la funzione obiettivo utilizzata per confrontare i modelli è la verosimiglianza statistica (in questo caso, l’errore residuo).  
+Per altri modelli, ad esempio il modello di regressione logistica, la funzione obiettivo per confrontare i modelli nidificati coincide con la verosimiglianza binomiale.    
+Il risultato di questo test statistico lo si legge dal p-value che può essere interpretato come il tasso di risultati falsi positivi e riflette la probabilità che l'informazione aggiuntiva catturata dal termine di interazione sia dovuta alla casualità.   
+Più è basso il p-value minore è la probabilità che l’informazione aggiuntiva catturata dal termine di interazione sia dovuta alla casualità.  
+Una evoluzione del modello nidificato sfrutta la cross-validation in modo da creare più coppie di modelli annidati a partire da differenti versioni del training set, a differenza dell’approccio tradizionale in cui gli stessi dati usati per la creazione del modello vengono riutilizzati per la sua valutazione che può essere svolta mediante qualsiasi misura di performance.   
+Considerato che la valutazione dipende molto dal contesto, questi due approcci non garantiscono conformità nei risultati.  
+Come detto in precedenza più sono i confronti che vengono effettuati, più alta è la possibilità di trovare interazioni false-positive.  
+Esistono diversi metodi per affrontare questo problema, ad un estremo, si sceglie di non effettuare controlli per i falsi positivi, oppure si applica la correzione di Bonferroni che utilizza una "severa" penalità esponenziale per minimizzare eventuali risultati falsi positivi.   
+Tuttavia la tecnica più equilibrata per individuare e gestire i falsi positivi si basa sul false discovery rate (FDR).  
+
+## Esempio dataset Ames  
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+library(utils)
+library(caret)
+library(tidymodels)
+library(AmesHousing)
+library(doParallel)
+```
+
+```{r, echo= FALSE}
+workers <- parallel::detectCores() - 1
+
+# Memory requirements: 
+# In addition to the main R session, each parallel worker is estimated to need 
+# about 500MB of memory.
+
+cl <- makeForkCluster(nnodes = workers)
+registerDoParallel(cl)
+```
+
+
+```{r, echo=FALSE}
+ames <- make_ames()
+
+set.seed(955)
+ames_split <- initial_split(ames)
+ames_train <- training(ames_split)
+
+```
+
+Nella presente applicazione vengono considerati solamente 18 regressori presenti nel dataset Ames, rispettivamente: **Bldg_Type, Neighborhood, Year_Built, Gr_Liv_Area, Full_Bath, Year_Sold, Lot_Area, Central_Air, Longitude, Latitude, MS_SubClass, Alley, Lot_Frontage, Pool_Area, Garage_Finish, Foundation, Land_Contour e Roof_Style. **   
+Il comando `recipe()` permette di applicare opportune trasformazioni ai dati iniziali.   
+
+```{r}
+
+ames_rec <-
+  recipe(Sale_Price ~ Bldg_Type + Neighborhood + Year_Built +
+           Gr_Liv_Area + Full_Bath + Year_Sold + Lot_Area +
+           Central_Air + Longitude + Latitude + MS_SubClass +
+           Alley + Lot_Frontage + Pool_Area + Garage_Finish + 
+           Foundation + Land_Contour + Roof_Style,
+         data = ames_train) %>%
+  step_log(Sale_Price, base = 10) %>%
+  step_BoxCox(Lot_Area, Gr_Liv_Area, Lot_Frontage) %>%
+  step_other(Neighborhood, threshold = 0.05)  %>%
+  step_bs(Longitude, Latitude, options = list(df = 5)) %>% 
+  step_zv(all_predictors())
+
+```
+
+In particolare, le trasformazioni effettuate sono state le seguenti:  
+
+```{r, echo=FALSE}
+ames_rec
+```
+
+
+Si procede creando una dataframe contenente tutte le possibile coppie di interazioni $\frac{p(p-1)}{2}$ tra i regressori.
+
+```{r}
+ames_preds <- ames_rec$var_info$variable[ames_rec$var_info$role == "predictor"]
+interactions <- t(combn(ames_preds, 2))
+colnames(interactions) <- c("var1", "var2")
+```
+
+```{r, echo=FALSE}
+set.seed(2532)
+interactions <- 
+  interactions %>% 
+  as_tibble() %>% 
+  # sample_n(50) %>%
+  mutate(
+    Reduction = NA_real_,
+    Pvalue = NA_real_,
+    RMSE = NA_real_,
+    anova_p = NA_real_
+  )
+```
+
+Si decide di addestrare un modello lineare sui dati del training set utilizzando una repeated k-fold cross-validation, iterando la procedura 5 volte con K=10.      
+
+```{r, warning=FALSE, message=FALSE}
+int_ctrl <- trainControl(method = "repeatedcv", repeats = 5)
+set.seed(2691)
+main_eff <- train(ames_rec, 
+                  data = ames_train, 
+                  method = "lm", 
+                  metric = "RMSE",
+                  trControl = int_ctrl)
+```
+
+Si implementa la funzione `compare_models_1way` al fine di confrontare il modello senza interazioni (main effect model) e il main effect model più un' interazione.  
+
+```{r}
+compare_models_1way <- function(a, b, metric = a$metric[1], ...) {
+  mods <- list(a, b)
+  rs <- resamples(mods)
+  diffs <- diff(rs, metric = metric[1], ...)
+  diffs$statistics[[1]][[1]]
+}
+```
+
+In questo modo è possibile valutare l'effetto delle interazioni in termini di: __Reduction, Pvalue, RMSE, anova_p__.  
+```{r, warning=FALSE, message=FALSE}
+
+for (i in 1:nrow(interactions)) {
+  tmp_vars <- c("Class", interactions$var1[i], interactions$var2[i])
+  
+  int <-
+    as.formula(paste0(
+      "~ starts_with('",
+      interactions$var1[i],
+      "'):starts_with('",
+      interactions$var2[i],
+      "')"
+    ))
+  
+  int_rec <- 
+    ames_rec %>% 
+    step_interact(int) %>% 
+    step_zv(all_predictors())
+  
+  set.seed(2691)
+  main_int <- train(int_rec, 
+                    data = ames_train, 
+                    method = "lm", 
+                    metric = "RMSE",
+                    trControl = int_ctrl)  
+  
+  tmp_diff <- compare_models_1way(main_int, main_eff, alternative = "less")
+  interactions$RMSE[i] <- getTrainPerf(main_eff)[1, "TrainRMSE"]
+  interactions$Reduction[i] <- -tmp_diff$estimate
+  interactions$Pvalue[i] <- tmp_diff$p.value
+  
+  a1 <- 
+    anova(main_eff$finalModel, main_int$finalModel) %>% 
+    tidy() %>% 
+    slice(2) %>% 
+    pull(p.value)
+  
+  interactions$anova_p[i] <- a1
+}
+```
+
+```{r}
+head(interactions)
+```
+
+```{r, echo=FALSE}
+raw <- 
+  interactions %>%
+  dplyr::filter(Reduction > 0) %>%
+  dplyr::select(var1, var2, Pvalue, anova_p) %>%
+  dplyr::rename(Resampling = Pvalue) %>%
+  dplyr::rename(Traditional = anova_p) %>%
+  mutate(Method = "No Adjustment")
+
+fdrs <- 
+  raw %>%
+  mutate(
+    Resampling = p.adjust(Resampling, method = "BH"),
+    Traditional = p.adjust(Traditional, method = "BH")
+  ) %>%
+  mutate(Method = "FDR")
+
+bon <- 
+  raw %>%
+  mutate(
+    Resampling = p.adjust(Resampling, method = "bonferroni"),
+    Traditional = p.adjust(Traditional, method = "bonferroni")
+  ) %>%
+  mutate(Method = "Bonferroni")
+
+all_p <- 
+  bind_rows(raw, fdrs, bon) %>%
+  gather(Estimate, Value, -var1, -var2, -Method) %>%
+  mutate(
+    Method = factor(Method, levels = c("No Adjustment", "FDR", "Bonferroni")),
+    Estimate = factor(Estimate, levels = c("Traditional", "Resampling"))
+  )
+
+```
+
+
+```{r , include=TRUE, echo=TRUE, eval=FALSE}
+plot <- 
+  ggplot(all_p, aes(x = Value)) + 
+  geom_histogram(breaks = (0:20)/20) + 
+  geom_rug(col = "red") + 
+  facet_grid(Estimate ~ Method)
+```
+
+```{r A comparison of the the distribution of p-values, fig.align='center',echo=FALSE,out.width='70%'}
+knitr::include_graphics("A comparison of the the distribution of p-values.png")
+```
+
+Questa rappresentazione confronta la distrubuzione dei  p-value ottenuta con l’approccio tradizionale e la cross-validation, valutando le diverse tipologie di aggiustamento (No Adjustment, FDR, Bonferroni).  
+Emerge che utilizzando l’approccio tradizionale quasi tutti gli effetti delle interazioni vengono valutate significative, ciò potrebbe essere dovuto a una potenziale presenza di overfitting. L'approccio di cross validation ha un tasso minore di significatività ed è meno influenzato da entrambi i tipi di aggiustamenti.  

@@ -1,0 +1,263 @@
+---
+title: "Analisi esplorativa"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r, warning=FALSE, message=FALSE}
+library(caret)
+library(glmnet)
+library(tidymodels)
+library(AmesHousing)
+library(MASS)
+library(gridExtra)
+library(grid)
+library(moments)
+library(ggplot2)
+library(dplyr)
+library(tidyverse)
+library(ggcorrplot)
+
+```
+
+```{r}
+ames <- make_ames()
+set.seed(955)
+ames_split <- initial_split(ames)
+ames_train <- training(ames_split)
+ames_test <- testing(ames_split)
+```
+
+Questo dataset contiene informazioni relative alla vendita di proprietà immobiliari in Ames(IA) dal 2006 al 2010. 
+
+Un primo sguardo ai dati suggerisce le seguenti domande: 
+
+### 1. Qual è il costo di una casa?
+
+```{r}
+options(scipen=999)
+ ggplot(ames_train, aes(x=Sale_Price))+
+   geom_histogram(color="blue", fill="white", bins = 75)+
+   ggtitle("Qual è il costo di una casa?")
+
+```
+
+
+La proprietà più costosa è stata venduta ad un prezzo pari a 755000 Є mentre la casa meno costosa è stata venduta a 12789Є.  
+Il prezzo medio di vendità risulta pari a 180827.6Є  e la mediana dei prezzi di vendità coincide con `r median(ames_train$Sale_Price)`Є.  
+La distribuzione presenta una leggera asimmetria positiva ed inoltre sono presenti numerosi outliers.  
+
+### 2. Quando sono state costruite le case?
+
+```{r}
+ ggplot(ames_train, aes(x=Year_Built))+
+   geom_histogram(color="blue", fill="white", bins = 14)+
+   ggtitle("Quando sono state costruite le case?")
+
+```
+
+La maggior parte delle case sono state costruite dopo gli anni '50.  
+La casa più vecchia è stata costruita nel `r min(ames_train$Year_Built) `.   
+La casa più nuova è stata costruita nel `r max(ames_train$Year_Built) ` . 
+  
+```{r echo=FALSE}
+
+ames_train_tbl <- as_tibble(ames_train)
+
+```
+
+### 3. Quando sono state vendute le case?
+
+```{r}
+tbl_1 = ames_train_tbl %>%
+  dplyr::select(Year_Sold, Mo_Sold) %>%
+  group_by(Year_Sold, Mo_Sold ) %>%
+  count(Year_Sold, Mo_Sold) %>%
+  dplyr::mutate(V=paste( as.character(Year_Sold), " - ", as.character(Mo_Sold) )) 
+
+ggplot(tbl_1, aes( x = V , y=n  ) ) +
+  geom_bar(stat="identity", fill="steelblue")+
+  theme(text = element_text(size=7),
+        axis.text.x = element_text(angle=90, hjust=1))+
+  xlab("") +
+  ggtitle("Quando sono state vendute le case?")
+ 
+
+```
+
+Emerge la presenza di un pattern legato alla stagionalità, in particolare sono presenti dei picchi nei mesi di giugno e luglio.  
+
+### 4. In che quartiere sono situate le case?
+
+```{r}
+
+tbl_2 = ames_train_tbl %>%
+  dplyr::select(Neighborhood) %>%
+  arrange(Neighborhood) %>%
+  group_by(Neighborhood) %>%
+  count()
+
+ggplot(tbl_2, aes( x = Neighborhood , y=n  ) ) +
+  geom_bar(stat="identity", fill="steelblue")+
+  theme(text = element_text(size=7),
+        axis.text.x = element_text(angle=90, hjust=1))+
+  xlab("") +
+  ggtitle("In che quartiere sono situate le case?")
+ 
+
+```
+
+La maggior parte delle case sono situate nei quartieri di North Aes, College_Creek e Old Town, mentre i quartieri di 
+Greens, Green_hills e Landmark non presentano un gran numero di case.  
+
+### 5. Quanto sono grandi le case?
+
+```{r}
+ ggplot(ames_train, aes(x=Gr_Liv_Area))+
+   geom_histogram(color="blue", fill="white", bins = 21)+
+   ggtitle("Quanto sono grandi le case? (in sq feet)")
+
+```
+
+
+In media una casa è grande `r round(mean(ames_train$Gr_Liv_Area),2)` sq ft, la mediana della grandezza delle case risulta pari a `r median(ames_train$Gr_Liv_Area)` sq ft.  
+La casa più grande è di `r round(max(ames_train$Gr_Liv_Area),2)` sq ft, mentre la più piccola `r round(min(ames_train$Gr_Liv_Area),2)` sq ft.  
+
+# Analisi Univariata
+
+Esaminiamo la distribuzione della variabile dipendente, SalePrice.  
+```{r}
+ggplot(ames_train_tbl, aes(x=Sale_Price))+
+ geom_histogram(aes(y=..density..), bins = 75,  colour="black", fill="white")+
+  geom_density(alpha=.2, fill="#FF6666")
+  
+```
+
+La distribuzione di SalePrice è caratterizzata dalla presenza di una leggera asimetria positiva.
+Infatti, si ha:  
+```{r}
+skewness(ames_train$Sale_Price)
+kurtosis(ames_train$Sale_Price)
+```
+
+
+```{r, echo=FALSE}
+col_subset= c("Bldg_Type" , "Neighborhood", "Year_Built" ,"Gr_Liv_Area" , "Full_Bath" , "Year_Sold" , "Lot_Area" ,
+           "Central_Air" , "Longitude" , "Latitude" , "MS_SubClass" , "Alley" , "Lot_Frontage" , "Pool_Area" , "Garage_Finish",
+           "Foundation" , "Land_Contour" , "Roof_Style")
+
+ames_subset_train=ames_train_tbl[, col_subset]
+num_features_tbl=dplyr::select_if(ames_subset_train, is.numeric)
+cat_features_tbl=dplyr::select_if(ames_subset_train, is.factor)
+```
+
+
+In fase di analisi verranno prese in considerazione solamente le seguenti variabili:
+
+```{r, echo=FALSE}
+p=list()
+for (i in colnames(num_features_tbl)) {
+
+    p[[i]]= ggplot(num_features_tbl, aes_string(i))+
+    geom_histogram(aes(y=..density..), bins = 75,  colour="black", fill="white")+
+    geom_density(alpha=.2, fill="#FF6666")
+  
+}
+
+do.call(grid.arrange,p)
+
+```
+
+```{r, echo=FALSE}
+
+ p2 = list( 
+  
+   ggplot( cat_features_tbl %>%
+  dplyr::select(Bldg_Type) %>%
+  arrange(Bldg_Type) %>%
+  group_by(Bldg_Type) %>%
+  count(), aes( x = Bldg_Type , y=n  ) ) +
+  geom_bar(stat="identity", fill="steelblue")+
+  theme(text = element_text(size=7),
+        axis.text.x = element_text(angle=90, hjust=1)) ,
+  
+  ggplot( cat_features_tbl %>%
+  dplyr::select(Central_Air) %>%
+  arrange(Central_Air) %>%
+  group_by(Central_Air) %>%
+  count(), aes( x = Central_Air , y=n  ) ) +
+  geom_bar(stat="identity", fill="steelblue")+
+  theme(text = element_text(size=7),
+        axis.text.x = element_text(angle=90, hjust=1)) ,
+  
+  
+ ggplot(cat_features_tbl %>%
+  dplyr::select(Alley) %>%
+  arrange(Alley) %>%
+  group_by(Alley) %>%
+  count(), aes( x = Alley , y=n  ) ) +
+  geom_bar(stat="identity", fill="steelblue")+
+  theme(text = element_text(size=7),
+        axis.text.x = element_text(angle=90, hjust=1)) ,
+ 
+ 
+ ggplot(cat_features_tbl %>%
+  dplyr::select(Garage_Finish) %>%
+  arrange(Garage_Finish) %>%
+  group_by(Garage_Finish) %>%
+  count(), aes( x = Garage_Finish , y=n  ) ) +
+  geom_bar(stat="identity", fill="steelblue")+
+  theme(text = element_text(size=7),
+        axis.text.x = element_text(angle=90, hjust=1)) ,
+ 
+  ggplot(cat_features_tbl %>%
+  dplyr::select(Foundation) %>%
+  arrange(Foundation) %>%
+  group_by(Foundation) %>%
+  count(), aes( x = Foundation , y=n  ) ) +
+  geom_bar(stat="identity", fill="steelblue")+
+  theme(text = element_text(size=7),
+        axis.text.x = element_text(angle=90, hjust=1)) ,
+    
+     
+  ggplot(cat_features_tbl %>%
+  dplyr::select(Land_Contour) %>%
+  arrange(Land_Contour) %>%
+  group_by(Land_Contour) %>%
+  count(), aes( x = Land_Contour , y=n  ) ) +
+  geom_bar(stat="identity", fill="steelblue")+
+  theme(text = element_text(size=7),
+        axis.text.x = element_text(angle=90, hjust=1)) ,
+  
+    ggplot(cat_features_tbl %>%
+  dplyr::select(Roof_Style) %>%
+  arrange(Roof_Style) %>%
+  group_by(Roof_Style) %>%
+  count(), aes( x = Roof_Style , y=n  ) ) +
+  geom_bar(stat="identity", fill="steelblue")+
+  theme(text = element_text(size=7),
+        axis.text.x = element_text(angle=90, hjust=1)) )
+    
+do.call(grid.arrange,p2)
+
+
+```
+
+### Correlation matrix
+
+```{r}
+ggcorrplot(cor(num_features_tbl), hc.order = TRUE, type = "lower",
+   lab = TRUE)
+```
+
+Dalla matrice di correlazione non risultano variabili particolarmente correlate.
+
+
+
+
+
+
+
